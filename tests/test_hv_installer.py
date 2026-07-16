@@ -1,0 +1,89 @@
+import importlib.util
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+APP = Path(__file__).resolve().parents[1] / "hv-installer-gui.py"
+spec = importlib.util.spec_from_file_location("hv_installer_gui", APP)
+gui = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gui)
+
+
+class InstallerTests(unittest.TestCase):
+    def test_every_capability_is_exposed(self):
+        self.assertEqual(set(gui.ACTIONS), {
+            "inspect", "install", "start", "stop", "update", "uninstall",
+            "disable_umip", "enable_umip", "bootloader", "disable_umip_entry",
+            "enable_umip_entry", "list_games", "configure_games", "disable_games",
+            "cpuid_test", "reboot",
+        })
+
+    def test_privileged_action_uses_verified_root_owned_backend(self):
+        args = gui.command("start", "deck")
+        self.assertEqual(args[:4], ["pkexec", "env", "-i", "SUDO_USER=deck"])
+        self.assertIn(str(gui.SERVICE_APP), args)
+        self.assertNotIn(str(APP.resolve()), args)
+        self.assertEqual(args[-2:], ["--backend", "start"])
+
+    def test_game_configuration_passes_only_selected_appids(self):
+        args = gui.command("configure_games", "deck", ["42", "99"])
+        self.assertEqual(args[-3:], ["configure_games", "42", "99"])
+        self.assertNotIn("hv-install.sh", args)
+
+    def test_empty_game_selection_disables_watcher(self):
+        self.assertEqual(gui.game_selection_action([]), ("disable_games", []))
+        self.assertEqual(gui.game_selection_action(["42"]), ("configure_games", ["42"]))
+
+    def test_read_only_actions_do_not_prompt_for_privileges(self):
+        for action in ("inspect", "bootloader", "list_games", "cpuid_test"):
+            self.assertNotIn("pkexec", gui.command(action, "deck"))
+
+    def test_status_output_is_parsed_with_safe_defaults(self):
+        status = gui.parse_status("os=bazzite\nkernel=6.0-test\numip=enabled\numip_arg=present\ninstalled=1\nloaded=0\nmatching=0\nwatcher=running\nconfigured=42,99\n")
+        self.assertEqual(status["kernel"], "6.0-test")
+        self.assertEqual(status["umip_arg"], "present")
+        self.assertTrue(status["installed"])
+        self.assertFalse(status["loaded"])
+        self.assertEqual(status["configured"], {"42", "99"})
+
+    def test_boot_arguments_can_be_applied_and_restored(self):
+        grub = 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n'
+        applied = gui.replace_kernel_arg(grub, "grub", True)
+        self.assertIn("clearcpuid=514", applied)
+        self.assertEqual(gui.replace_kernel_arg(applied, "grub", False), grub)
+        entry = "title Linux\noptions root=UUID=test quiet\n"
+        self.assertEqual(gui.replace_kernel_arg(gui.replace_kernel_arg(entry, "systemd-boot", True), "systemd-boot", False), entry)
+
+    def test_embedded_module_source_extracts_without_external_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = gui.extract_source(Path(directory) / "source")
+            self.assertTrue((source / "Makefile").is_file())
+            self.assertTrue((source / "src/cpuid_fault_emulation.c").is_file())
+            self.assertTrue((source / "inc/vmcb_layout.h").is_file())
+
+    def test_persistent_artifacts_are_root_owned_locations(self):
+        self.assertEqual(gui.SERVICE_APP.parent, Path("/usr/local/libexec"))
+        self.assertEqual(gui.MODULE_FILE.parent, Path("/var/lib/hv-installer"))
+
+    def test_shortcut_appid_supports_full_and_high_word_ids(self):
+        self.assertEqual(gui.shortcut_appid(str(42 << 32), "missing", {"42"}), "42")
+        self.assertEqual(gui.shortcut_appid("42", "missing", {"42"}), "42")
+        self.assertIsNone(gui.shortcut_appid(str(42 << 32), "missing", {"42"}, require_environment=True))
+
+    def test_real_backend_inspection_is_machine_readable(self):
+        result = subprocess.run(gui.command("inspect", "test-user"), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed=", result.stdout)
+        self.assertIn("watcher=", result.stdout)
+
+    def test_app_has_no_runtime_script_dependency_or_em_dashes(self):
+        text = APP.read_text()
+        for dependency in ("hv_gui_core", "hv-cpuid-probe", "hv-install.sh", chr(0x2014)):
+            self.assertNotIn(dependency, text)
+        for comment in ("# ugh pain", "# <3", "# yay regex"):
+            self.assertNotIn(comment, text)
+
+
+if __name__ == "__main__":
+    unittest.main()

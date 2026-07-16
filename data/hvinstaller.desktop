@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=HV Installer GTK
+Comment=Install and manage CPUID Fault Emulation
+Exec=hv-installer-gtk
+Icon=application-x-firmware
+Terminal=false
+Categories=System;
+Keywords=CPUID;Hypervisor;Kernel;Steam;
+StartupNotify=true
