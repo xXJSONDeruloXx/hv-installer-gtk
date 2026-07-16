@@ -4,6 +4,7 @@ import ctypes
 import fcntl
 import getpass
 import hashlib
+import io
 import mmap
 import os
 import pwd
@@ -13,6 +14,7 @@ import signal
 import struct
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 import traceback
@@ -49,26 +51,69 @@ def command(action, user, values=()):
     return [sys.executable, str(APP), "--backend", action, *values]
 
 
-def install_backend_copy():
-    source = APP.read_bytes(); digest = hashlib.sha256(source).digest()
+def desktop_source():
+    for path in (APP.parent / "hvinstaller.desktop",
+                 APP.parent / "data/hvinstaller.desktop",
+                 Path("/usr/local/share/applications/hvinstaller.desktop")):
+        if path.is_file(): return path
+    raise BackendError("Desktop entry is missing from the release")
+
+
+def tree_digest(root):
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        digest.update(str(path.relative_to(root)).encode()); digest.update(path.read_bytes())
+    return digest.digest()
+
+
+def backend_ready():
     try:
-        installed = SERVICE_APP.read_bytes(); metadata = SERVICE_APP.stat()
-        if hashlib.sha256(installed).digest() == digest and metadata.st_uid == 0 and not metadata.st_mode & 0o022: return
-    except OSError:
-        pass
-    fd = os.memfd_create("hv-installer", os.MFD_ALLOW_SEALING)
-    try:
-        written = 0
-        while written < len(source): written += os.write(fd, source[written:])
-        fcntl.fcntl(fd, fcntl.F_ADD_SEALS, fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
-        source_path = f"/proc/{os.getpid()}/fd/{fd}"
-        result = subprocess.run(["pkexec", "install", "-Dm755", source_path, str(SERVICE_APP)])
-        if result.returncode: raise BackendError("Could not install the privileged backend")
-    finally:
-        os.close(fd)
-    metadata = SERVICE_APP.stat()
-    if hashlib.sha256(SERVICE_APP.read_bytes()).digest() != digest or metadata.st_uid != 0 or metadata.st_mode & 0o022:
-        raise BackendError("Privileged backend verification failed")
+        metadata = SERVICE_APP.stat()
+        return (metadata.st_uid == 0 and not metadata.st_mode & 0o022 and
+                SERVICE_APP.read_bytes() == APP.read_bytes() and
+                tree_digest(INSTALLED_SOURCE) == tree_digest(bundled_source()))
+    except (OSError, BackendError):
+        return False
+
+
+def sealed_bundle():
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        archive.add(APP, arcname="hv-installer", recursive=False)
+        archive.add(desktop_source(), arcname="hvinstaller.desktop", recursive=False)
+        source = bundled_source()
+        for path in sorted(item for item in source.rglob("*") if item.is_file()):
+            archive.add(path, arcname=f"source/{path.relative_to(source)}", recursive=False)
+    payload = buffer.getvalue(); fd = os.memfd_create("hv-installer", os.MFD_ALLOW_SEALING)
+    written = 0
+    while written < len(payload): written += os.write(fd, payload[written:])
+    os.lseek(fd, 0, os.SEEK_SET)
+    fcntl.fcntl(fd, fcntl.F_ADD_SEALS,
+                fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+    return fd
+
+
+BOOTSTRAP = r'''set -eu
+bundle=$1
+user=$2
+action=$3
+shift 3
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+tar -xf "$bundle" -C "$tmp"
+install -Dm755 "$tmp/hv-installer" /usr/local/libexec/hv-installer
+install -Dm755 "$tmp/hv-installer" /usr/local/bin/hv-installer-gtk
+install -Dm644 "$tmp/hvinstaller.desktop" /usr/local/share/applications/hvinstaller.desktop
+rm -rf /usr/local/share/hv-installer-gtk/cpuid_fault_emulation
+mkdir -p /usr/local/share/hv-installer-gtk
+cp -R "$tmp/source" /usr/local/share/hv-installer-gtk/cpuid_fault_emulation
+if command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database /usr/local/share/applications || true; fi
+exec env -i "SUDO_USER=$user" PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 /usr/local/libexec/hv-installer --backend "$action" "$@"'''
+
+
+def bootstrap_command(action, user, bundle, values=()):
+    return ["pkexec", "env", "-i", f"SUDO_USER={user}", "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+            "/bin/sh", "-c", BOOTSTRAP, "_", bundle, user, action, *values]
 
 
 def game_selection_action(appids):
@@ -241,7 +286,7 @@ def inspect_backend():
 
 
 def bundled_source():
-    for source in (INSTALLED_SOURCE, APP.parent / "cpuid_fault_emulation"):
+    for source in (APP.parent / "cpuid_fault_emulation", INSTALLED_SOURCE):
         if (source / "Makefile").is_file() and (source / "dkms.conf").is_file(): return source
     raise BackendError("The installed kernel module source is missing")
 
@@ -995,16 +1040,23 @@ class App(Adw.Application):
     def execute(self, action, values=()):
         operation = OperationWindow(self.win, TITLES[action]); operation.present()
         def worker():
-            output = []
+            output = []; bundle_fd = None
             try:
-                if ACTIONS[action]: install_backend_copy()
-                process = subprocess.Popen(command(action, USER, values), text=True,
-                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+                if ACTIONS[action] and not backend_ready():
+                    bundle_fd = sealed_bundle()
+                    bundle = f"/proc/{os.getpid()}/fd/{bundle_fd}"
+                    argv = bootstrap_command(action, USER, bundle, values)
+                else:
+                    argv = command(action, USER, values)
+                process = subprocess.Popen(argv, text=True, stdout=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT, bufsize=1)
                 for line in process.stdout:
                     output.append(line); GLib.idle_add(operation.append, line)
                 code = process.wait()
             except Exception as error:
                 output.append(f"{error}\n"); GLib.idle_add(operation.append, output[-1]); code = 1
+            finally:
+                if bundle_fd is not None: os.close(bundle_fd)
             GLib.idle_add(self.action_finished, action, code, "".join(output), operation)
         threading.Thread(target=worker, daemon=True).start()
 

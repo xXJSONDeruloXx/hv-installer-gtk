@@ -6,20 +6,11 @@ It supports module installation, updates, start and stop controls, reversible UM
 
 ## Install
 
-Download the ZIP from the [latest release](https://github.com/xXJSONDeruloXx/hv-installer-gtk/releases/latest), extract it, and run:
+1. Download the ZIP from the [latest release](https://github.com/xXJSONDeruloXx/hv-installer-gtk/releases/latest).
+2. Extract the ZIP.
+3. Double-click **HV Installer GTK** and choose **Run** if prompted.
 
-```bash
-cd hv-installer-gtk-v*
-./install.sh
-```
-
-The setup script detects Arch, Debian, Fedora, or openSUSE and installs the required GTK integration packages when needed.
-
-Launch **HV Installer GTK** from the application menu or run:
-
-```bash
-hv-installer-gtk
-```
+No terminal setup is required. The application installs itself into the application menu when the first system change is applied. That bootstrap and requested action share one administrator prompt.
 
 ## Supported systems
 

@@ -1,5 +1,7 @@
 import importlib.util
+import os
 import subprocess
+import tarfile
 import unittest
 from pathlib import Path
 
@@ -24,6 +26,20 @@ class InstallerTests(unittest.TestCase):
         self.assertIn(str(gui.SERVICE_APP), args)
         self.assertNotIn(str(APP.resolve()), args)
         self.assertEqual(args[-2:], ["--backend", "start"])
+
+    def test_first_action_uses_one_prompt_and_sealed_complete_bundle(self):
+        fd = gui.sealed_bundle()
+        try:
+            with os.fdopen(os.dup(fd), "rb") as stream, tarfile.open(fileobj=stream) as archive:
+                names = set(archive.getnames())
+            self.assertIn("hv-installer", names)
+            self.assertIn("hvinstaller.desktop", names)
+            self.assertIn("source/src/cpuid_fault_emulation.c", names)
+            args = gui.bootstrap_command("start", "deck", f"/proc/self/fd/{fd}")
+            self.assertEqual(args.count("pkexec"), 1)
+            self.assertEqual(args[-2:], ["deck", "start"])
+        finally:
+            os.close(fd)
 
     def test_game_configuration_passes_only_selected_appids(self):
         args = gui.command("configure_games", "deck", ["42", "99"])
