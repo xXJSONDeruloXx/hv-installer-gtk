@@ -2,18 +2,18 @@
 
 GTK 4 application for installing and managing CPUID Fault Emulation.
 
-It supports module installation, updates, start and stop controls, reversible UMIP boot options, CPUID diagnostics, and automatic activation for selected Steam shortcuts. The privileged backend and kernel module source are embedded in the application.
+It supports module installation, updates, start and stop controls, reversible UMIP boot options, CPUID diagnostics, and automatic activation for selected Steam shortcuts. The release includes the privileged backend and tracked kernel module source.
 
 ## Install
 
-Download `hv-installer-gtk-installer.run` from the [latest release](https://github.com/xXJSONDeruloXx/hv-installer-gtk/releases/latest), then run:
+Download the ZIP from the [latest release](https://github.com/xXJSONDeruloXx/hv-installer-gtk/releases/latest), extract it, and run:
 
 ```bash
-chmod +x hv-installer-gtk-installer.run
-./hv-installer-gtk-installer.run
+cd hv-installer-gtk-v*
+./install.sh
 ```
 
-The installer detects Arch, Debian, Fedora, or openSUSE and installs the required GTK integration packages when needed.
+The setup script detects Arch, Debian, Fedora, or openSUSE and installs the required GTK integration packages when needed.
 
 Launch **HV Installer GTK** from the application menu or run:
 
@@ -36,7 +36,7 @@ make check
 ./hv-installer-gui.py
 ```
 
-Build the release installer with:
+Build the release ZIP with:
 
 ```bash
 make release

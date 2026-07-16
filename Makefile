@@ -8,10 +8,13 @@ DATADIR := $(DESTDIR)$(PREFIX)/share/applications
 install:
 	install -Dm755 hv-installer-gui.py $(BINDIR)/hv-installer-gtk
 	install -Dm644 data/hvinstaller.desktop $(DATADIR)/hvinstaller.desktop
+	install -d $(DESTDIR)$(PREFIX)/share/hv-installer-gtk/cpuid_fault_emulation
+	cp -R cpuid_fault_emulation/. $(DESTDIR)$(PREFIX)/share/hv-installer-gtk/cpuid_fault_emulation/
 
 uninstall:
 	rm -f $(BINDIR)/hv-installer-gtk
 	rm -f $(DATADIR)/hvinstaller.desktop
+	rm -rf $(DESTDIR)$(PREFIX)/share/hv-installer-gtk
 
 check:
 	$(PYTHON) -m py_compile hv-installer-gui.py

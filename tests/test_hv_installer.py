@@ -1,6 +1,5 @@
 import importlib.util
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -55,12 +54,12 @@ class InstallerTests(unittest.TestCase):
         entry = "title Linux\noptions root=UUID=test quiet\n"
         self.assertEqual(gui.replace_kernel_arg(gui.replace_kernel_arg(entry, "systemd-boot", True), "systemd-boot", False), entry)
 
-    def test_embedded_module_source_extracts_without_external_files(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = gui.extract_source(Path(directory) / "source")
-            self.assertTrue((source / "Makefile").is_file())
-            self.assertTrue((source / "src/cpuid_fault_emulation.c").is_file())
-            self.assertTrue((source / "inc/vmcb_layout.h").is_file())
+    def test_kernel_module_source_is_tracked_and_current(self):
+        source = APP.parent / "cpuid_fault_emulation"
+        self.assertEqual(gui.bundled_source(), source)
+        self.assertTrue((source / "Makefile").is_file())
+        module = (source / "src/cpuid_fault_emulation.c").read_text()
+        self.assertIn("invlpg_tlbsync_enable", module)
 
     def test_persistent_artifacts_are_root_owned_locations(self):
         self.assertEqual(gui.SERVICE_APP.parent, Path("/usr/local/libexec"))
@@ -79,7 +78,8 @@ class InstallerTests(unittest.TestCase):
 
     def test_app_has_no_runtime_script_dependency_or_em_dashes(self):
         text = APP.read_text()
-        for dependency in ("hv_gui_core", "hv-cpuid-probe", "hv-install.sh", chr(0x2014)):
+        home_prefix = str(Path("/") / "home") + "/"
+        for dependency in ("hv_gui_core", "hv-cpuid-probe", "hv-install.sh", "SOURCE_ARCHIVE", home_prefix, chr(0x2014)):
             self.assertNotIn(dependency, text)
         for comment in ("# ugh pain", "# <3", "# yay regex"):
             self.assertNotIn(comment, text)
