@@ -822,7 +822,7 @@ class App(Adw.Application):
         if hasattr(self, "win"):
             self.win.present(); return
         self.win = Adw.ApplicationWindow(application=self, title="HV Setup",
-                                         default_width=720, default_height=650)
+                                         default_width=760, default_height=780)
         toolbar = Adw.ToolbarView(); header = Adw.HeaderBar()
         header.set_title_widget(Adw.WindowTitle(title="HV Setup", subtitle="CPUID Fault Emulation"))
         self.refresh_button = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh status")
