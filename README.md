@@ -1,6 +1,6 @@
 # HV Installer GTK
 
-<img width="758" height="770" alt="image" src="https://github.com/user-attachments/assets/fe331cda-64a8-46e1-aedb-02aee39062ed" />
+<img width="810" height="830" alt="image" src="https://github.com/user-attachments/assets/61ee4487-d642-4e24-8981-01e4a3d960b0" />
 
 
 GTK 4 application for installing and managing CPUID Fault Emulation.
