@@ -11,9 +11,9 @@ It supports module installation, updates, start and stop controls, reversible UM
 
 1. Download the ZIP from the [latest release](https://github.com/xXJSONDeruloXx/hv-installer-gtk/releases/latest).
 2. Extract the ZIP.
-3. Double-click **HV Installer GTK** and choose **Run** if prompted.
+3. Right-click **HV Installer GTK** and choose **Run as program**.
 
-No terminal setup is required. The application requests administrator access once at launch, installs itself into the application menu, and reuses that authenticated session for every privileged action until the window closes.
+The application requests administrator access once at launch, installs itself into the application menu, and reuses that authenticated session for every privileged action until the window closes.
 
 ## Supported systems
 
@@ -36,8 +36,6 @@ Build the release ZIP with:
 make release
 ```
 
-The test suite does not perform privileged system changes.
+## Disclaimer
 
-## Security
-
-Read-only checks run as the desktop user. Modifying actions use a sealed snapshot installed as a verified root-owned backend. Persistent module artifacts are stored under `/var/lib/hv-installer`, and the game watcher runs only the verified backend.
+This software is made solely for exploration and research purposes. I am not responsible for what happens to your machine when using this. 
