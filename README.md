@@ -10,7 +10,7 @@ It supports module installation, updates, start and stop controls, reversible UM
 2. Extract the ZIP.
 3. Double-click **HV Installer GTK** and choose **Run** if prompted.
 
-No terminal setup is required. The application installs itself into the application menu when the first system change is applied. That bootstrap and requested action share one administrator prompt.
+No terminal setup is required. The application requests administrator access once at launch, installs itself into the application menu, and reuses that authenticated session for every privileged action until the window closes.
 
 ## Supported systems
 

@@ -29,7 +29,7 @@ def main():
                         "1. Double-click 'HV Installer GTK'.\n"
                         "2. Choose Run if your file manager asks.\n"
                         "3. Use the graphical application.\n\n"
-                        "No terminal setup is required. The administrator password is requested once when the first system change is applied.\n")
+                        "No terminal setup is required. The administrator password is requested once when the application launches.\n")
         add_bytes(archive, instructions.encode(), "START HERE.txt", 0o100644)
         source = ROOT / "cpuid_fault_emulation"
         for path in sorted(item for item in source.rglob("*") if item.is_file()):

@@ -5,12 +5,14 @@ import fcntl
 import getpass
 import hashlib
 import io
+import json
 import mmap
 import os
 import pwd
 import re
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -108,12 +110,24 @@ rm -rf /usr/local/share/hv-installer-gtk/cpuid_fault_emulation
 mkdir -p /usr/local/share/hv-installer-gtk
 cp -R "$tmp/source" /usr/local/share/hv-installer-gtk/cpuid_fault_emulation
 if command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database /usr/local/share/applications || true; fi
+if [ "$action" = "__daemon__" ]; then
+    exec env -i "SUDO_USER=$user" PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 /usr/local/libexec/hv-installer --daemon "$1" "$user" "$2" "$3"
+fi
 exec env -i "SUDO_USER=$user" PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 /usr/local/libexec/hv-installer --backend "$action" "$@"'''
 
 
 def bootstrap_command(action, user, bundle, values=()):
     return ["pkexec", "env", "-i", f"SUDO_USER={user}", "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
             "/bin/sh", "-c", BOOTSTRAP, "_", bundle, user, action, *values]
+
+
+def daemon_command(user, socket_path, uid, gid):
+    return ["pkexec", "env", "-i", f"SUDO_USER={user}", "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+            str(SERVICE_PYTHON), str(SERVICE_APP), "--daemon", str(socket_path), user, str(uid), str(gid)]
+
+
+def bootstrap_daemon_command(user, bundle, socket_path, uid, gid):
+    return bootstrap_command("__daemon__", user, bundle, [str(socket_path), str(uid), str(gid)])
 
 
 def game_selection_action(appids):
@@ -692,6 +706,39 @@ def backend(action, values):
     dispatch[action]()
 
 
+def send_message(connection, message):
+    connection.sendall(json.dumps(message).encode() + b"\n")
+
+
+def daemon_server(socket_path, user, uid, gid):
+    if os.geteuid() != 0 or APP != SERVICE_APP: raise BackendError("The privileged daemon must use the verified backend")
+    path = Path(socket_path); runtime = Path(f"/run/user/{uid}")
+    if path.parent.resolve() != runtime.resolve() or path.name != "hv-installer.sock":
+        raise BackendError("Invalid privileged daemon socket path")
+    if runtime.stat().st_uid != uid: raise BackendError("Invalid runtime directory owner")
+    path.unlink(missing_ok=True)
+    server = socket.socket(socket.AF_UNIX); server.bind(str(path)); os.chmod(path, 0o600); os.chown(path, uid, gid)
+    server.listen(1)
+    try:
+        connection, _ = server.accept(); path.unlink(missing_ok=True)
+        with connection, connection.makefile("r", encoding="utf-8") as requests:
+            for line in requests:
+                try:
+                    request = json.loads(line); action = request["action"]; values = request.get("values", [])
+                    if action not in ACTIONS or not ACTIONS[action] or not all(isinstance(value, str) for value in values):
+                        raise BackendError("Invalid privileged action request")
+                    environment = {"SUDO_USER": user, "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
+                    process = subprocess.Popen([str(SERVICE_PYTHON), str(SERVICE_APP), "--backend", action, *values],
+                                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment)
+                    for output in process.stdout: send_message(connection, {"type": "output", "data": output})
+                    send_message(connection, {"type": "done", "code": process.wait()})
+                except Exception as error:
+                    send_message(connection, {"type": "output", "data": f"{error}\n"})
+                    send_message(connection, {"type": "done", "code": 1})
+    finally:
+        path.unlink(missing_ok=True); server.close()
+
+
 USER = os.environ.get("SUDO_USER") or getpass.getuser()
 NAMES = {"bazzite": "Bazzite", "steamos": "SteamOS", "linux": "Linux"}
 TITLES = {
@@ -750,6 +797,12 @@ class App(Adw.Application):
         self.state = parse_status("")
         self.probe_result = None
         self.probe_started = False
+        self.daemon_event = threading.Event()
+        self.daemon_socket = None
+        self.daemon_reader = None
+        self.daemon_process = None
+        self.daemon_error = None
+        self.daemon_lock = threading.Lock()
 
     def do_startup(self):
         Adw.Application.do_startup(self)
@@ -782,6 +835,52 @@ class App(Adw.Application):
         self.toasts = Adw.ToastOverlay(child=self.stack); toolbar.set_content(self.toasts)
         self.win.set_content(toolbar); self.win.present(); self.refresh()
         GLib.timeout_add_seconds(5, self.periodic_refresh)
+        if os.environ.get("HV_INSTALLER_NO_DAEMON"):
+            self.daemon_error = "Administrator session disabled"; self.daemon_event.set()
+        else:
+            self.start_daemon()
+
+    def start_daemon(self):
+        self.toast("Requesting administrator access…")
+        def worker():
+            bundle_fd = None
+            try:
+                runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+                socket_path = runtime / "hv-installer.sock"; socket_path.unlink(missing_ok=True)
+                if backend_ready():
+                    argv = daemon_command(USER, socket_path, os.getuid(), os.getgid())
+                else:
+                    bundle_fd = sealed_bundle(); bundle = f"/proc/{os.getpid()}/fd/{bundle_fd}"
+                    argv = bootstrap_daemon_command(USER, bundle, socket_path, os.getuid(), os.getgid())
+                self.daemon_process = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                                                       stderr=subprocess.PIPE, text=True)
+                while self.daemon_process.poll() is None:
+                    if socket_path.exists():
+                        connection = socket.socket(socket.AF_UNIX); connection.connect(str(socket_path))
+                        self.daemon_socket = connection
+                        self.daemon_reader = connection.makefile("r", encoding="utf-8")
+                        self.daemon_event.set(); GLib.idle_add(self.toast, "Administrator session ready")
+                        return
+                    time.sleep(.1)
+                detail = self.daemon_process.stderr.read().strip()
+                self.daemon_error = detail or "Administrator access was not approved"
+            except Exception as error:
+                self.daemon_error = str(error)
+            finally:
+                if bundle_fd is not None: os.close(bundle_fd)
+                if self.daemon_socket is None:
+                    self.daemon_event.set(); GLib.idle_add(self.toast, self.daemon_error)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def do_shutdown(self):
+        if self.daemon_socket:
+            try: self.daemon_socket.shutdown(socket.SHUT_RDWR)
+            except OSError: pass
+            self.daemon_socket.close()
+        if self.daemon_process:
+            try: self.daemon_process.wait(timeout=2)
+            except subprocess.TimeoutExpired: self.daemon_process.terminate()
+        Adw.Application.do_shutdown(self)
 
     def loading_page(self):
         return Adw.StatusPage(icon_name="content-loading-symbolic", title="Checking your system…",
@@ -1040,23 +1139,30 @@ class App(Adw.Application):
     def execute(self, action, values=()):
         operation = OperationWindow(self.win, TITLES[action]); operation.present()
         def worker():
-            output = []; bundle_fd = None
+            output = []
             try:
-                if ACTIONS[action] and not backend_ready():
-                    bundle_fd = sealed_bundle()
-                    bundle = f"/proc/{os.getpid()}/fd/{bundle_fd}"
-                    argv = bootstrap_command(action, USER, bundle, values)
+                if ACTIONS[action]:
+                    self.daemon_event.wait()
+                    if not self.daemon_socket: raise BackendError(self.daemon_error or "Administrator session is unavailable")
+                    with self.daemon_lock:
+                        request = json.dumps({"action": action, "values": list(values)}).encode() + b"\n"
+                        self.daemon_socket.sendall(request)
+                        while True:
+                            line = self.daemon_reader.readline()
+                            if not line: raise BackendError("Administrator session ended unexpectedly")
+                            message = json.loads(line)
+                            if message["type"] == "output":
+                                text = message["data"]; output.append(text); GLib.idle_add(operation.append, text)
+                            elif message["type"] == "done":
+                                code = message["code"]; break
                 else:
-                    argv = command(action, USER, values)
-                process = subprocess.Popen(argv, text=True, stdout=subprocess.PIPE,
-                                           stderr=subprocess.STDOUT, bufsize=1)
-                for line in process.stdout:
-                    output.append(line); GLib.idle_add(operation.append, line)
-                code = process.wait()
+                    process = subprocess.Popen(command(action, USER, values), text=True,
+                                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+                    for line in process.stdout:
+                        output.append(line); GLib.idle_add(operation.append, line)
+                    code = process.wait()
             except Exception as error:
                 output.append(f"{error}\n"); GLib.idle_add(operation.append, output[-1]); code = 1
-            finally:
-                if bundle_fd is not None: os.close(bundle_fd)
             GLib.idle_add(self.action_finished, action, code, "".join(output), operation)
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1087,6 +1193,8 @@ if __name__ == "__main__":
             raise SystemExit(cpuid_probe())
         if len(sys.argv) >= 3 and sys.argv[1] == "--backend":
             backend(sys.argv[2], sys.argv[3:]); raise SystemExit(0)
+        if len(sys.argv) == 6 and sys.argv[1] == "--daemon":
+            daemon_server(sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5])); raise SystemExit(0)
         if len(sys.argv) == 2 and sys.argv[1] == "--watch":
             if os.geteuid() != 0: raise BackendError("The watcher requires administrator privileges")
             watch_games(); raise SystemExit(0)

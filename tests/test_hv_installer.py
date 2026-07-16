@@ -35,11 +35,18 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("hv-installer", names)
             self.assertIn("hvinstaller.desktop", names)
             self.assertIn("source/src/cpuid_fault_emulation.c", names)
-            args = gui.bootstrap_command("start", "deck", f"/proc/self/fd/{fd}")
+            args = gui.bootstrap_daemon_command("deck", f"/proc/self/fd/{fd}",
+                                                "/run/user/1000/hv-installer.sock", 1000, 1000)
             self.assertEqual(args.count("pkexec"), 1)
-            self.assertEqual(args[-2:], ["deck", "start"])
+            self.assertIn("__daemon__", args)
+            self.assertEqual(args[-3:], ["/run/user/1000/hv-installer.sock", "1000", "1000"])
         finally:
             os.close(fd)
+
+    def test_installed_daemon_also_uses_one_launch_prompt(self):
+        args = gui.daemon_command("deck", "/run/user/1000/hv-installer.sock", 1000, 1000)
+        self.assertEqual(args.count("pkexec"), 1)
+        self.assertIn("--daemon", args)
 
     def test_game_configuration_passes_only_selected_appids(self):
         args = gui.command("configure_games", "deck", ["42", "99"])
