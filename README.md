@@ -1,5 +1,8 @@
 # HV Installer GTK
 
+<img width="758" height="770" alt="image" src="https://github.com/user-attachments/assets/fe331cda-64a8-46e1-aedb-02aee39062ed" />
+
+
 GTK 4 application for installing and managing CPUID Fault Emulation.
 
 It supports module installation, updates, start and stop controls, reversible UMIP boot options, CPUID diagnostics, and automatic activation for selected Steam shortcuts. The release includes the privileged backend and tracked kernel module source.
