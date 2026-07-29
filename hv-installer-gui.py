@@ -21,6 +21,7 @@ import threading
 import time
 import traceback
 import urllib.parse
+import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -271,6 +272,32 @@ def release_asset_url(release, kernel):
             parsed = urllib.parse.urlparse(url) if isinstance(url, str) else None
             if parsed and parsed.scheme == "https" and parsed.netloc: return url
     raise BackendError(f"No compatible prebuilt module named {expected} was found")
+
+
+def module_file_matches(path, kernel):
+    result = quiet(["modinfo", "-F", "vermagic", str(path)]) if shutil.which("modinfo") else None
+    return bool(result and result.returncode == 0 and result.stdout.split(" ", 1)[0].strip() == kernel)
+
+
+def download_prebuilt_module(config, kernel, destination=DOWNLOADED_MODULE_FILE,
+                             opener=urllib.request.urlopen, validator=module_file_matches):
+    request = urllib.request.Request(selected_release_api_url(config), headers={"Accept": "application/vnd.github+json"})
+    try:
+        with opener(request, timeout=30) as response: release = json.loads(response.read().decode())
+        asset_request = urllib.request.Request(release_asset_url(release, kernel))
+        destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        temporary = destination.with_suffix(".tmp")
+        try:
+            with opener(asset_request, timeout=30) as response, temporary.open("wb") as stream:
+                while chunk := response.read(1024 * 1024): stream.write(chunk)
+            temporary.chmod(0o644)
+            if not validator(temporary, kernel): raise BackendError("Downloaded module does not match the running kernel")
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BackendError(f"Could not download the prebuilt module: {error}") from error
+    return destination
 
 
 def quiet(args):

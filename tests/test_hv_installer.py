@@ -1,4 +1,6 @@
 import importlib.util
+import io
+import json
 import os
 import subprocess
 import tarfile
@@ -155,6 +157,45 @@ class InstallerTests(unittest.TestCase):
             }),
             "https://api.github.com/repos/owner/repository/releases/latest",
         )
+
+    def test_prebuilt_module_download_is_atomic_and_validated(self):
+        kernel = "6.9.0"
+        metadata = json.dumps({"assets": [{
+            "name": f"cpuid_fault_emulation-{kernel}.ko",
+            "browser_download_url": "https://example.test/module.ko",
+        }]}).encode()
+        responses = [io.BytesIO(metadata), io.BytesIO(b"module-bytes")]
+        def opener(_request, timeout):
+            self.assertEqual(timeout, 30)
+            return responses.pop(0)
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "downloaded" / "module.ko"
+            result = gui.download_prebuilt_module(
+                {"module_repository": "default"}, kernel, destination,
+                opener=opener,
+                validator=lambda path, release: path.read_bytes() == b"module-bytes" and release == kernel,
+            )
+            self.assertEqual(result, destination)
+            self.assertEqual(destination.read_bytes(), b"module-bytes")
+            self.assertFalse(destination.with_suffix(".tmp").exists())
+
+    def test_prebuilt_module_download_discards_an_invalid_file(self):
+        kernel = "6.9.0"
+        metadata = json.dumps({"assets": [{
+            "name": f"cpuid_fault_emulation-{kernel}.ko",
+            "browser_download_url": "https://example.test/module.ko",
+        }]}).encode()
+        responses = [io.BytesIO(metadata), io.BytesIO(b"invalid")]
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "module.ko"
+            with self.assertRaises(gui.BackendError):
+                gui.download_prebuilt_module(
+                    gui.default_config(), kernel, destination,
+                    opener=lambda _request, timeout: responses.pop(0),
+                    validator=lambda *_: False,
+                )
+            self.assertFalse(destination.exists())
+            self.assertFalse(destination.with_suffix(".tmp").exists())
 
     def test_shortcut_appid_supports_full_and_high_word_ids(self):
         self.assertEqual(gui.shortcut_appid(str(42 << 32), "missing", {"42"}), "42")
