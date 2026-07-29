@@ -18,7 +18,7 @@ spec.loader.exec_module(gui)
 class InstallerTests(unittest.TestCase):
     def test_every_capability_is_exposed(self):
         self.assertEqual(set(gui.ACTIONS), {
-            "inspect", "install", "start", "stop", "update", "uninstall", "download",
+            "inspect", "logs", "install", "start", "stop", "update", "uninstall", "download",
             "disable_umip", "enable_umip", "bootloader", "disable_umip_entry",
             "enable_umip_entry", "list_games", "configure_games", "disable_games",
             "cpuid_test", "reboot",
@@ -62,7 +62,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(gui.game_selection_action(["42"]), ("configure_games", ["42"]))
 
     def test_read_only_actions_do_not_prompt_for_privileges(self):
-        for action in ("inspect", "bootloader", "list_games", "cpuid_test"):
+        for action in ("inspect", "logs", "bootloader", "list_games", "cpuid_test"):
             self.assertNotIn("pkexec", gui.command(action, "deck"))
 
     def test_status_output_is_parsed_with_safe_defaults(self):
@@ -215,6 +215,13 @@ class InstallerTests(unittest.TestCase):
         saved = save.call_args.args[0]
         self.assertEqual(saved["setup_method"], "download")
         self.assertEqual(saved["game_module_source"], "download")
+
+    def test_operation_log_is_bounded_and_readable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "operation.log"
+            gui.append_operation_log("first\n", path, limit=10)
+            gui.append_operation_log("second\n", path, limit=10)
+            self.assertEqual(gui.read_operation_log(path), "st\nsecond\n")
 
     def test_steam_library_discovery_includes_installed_apps(self):
         with tempfile.TemporaryDirectory() as directory:

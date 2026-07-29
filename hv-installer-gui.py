@@ -33,6 +33,7 @@ from gi.repository import Adw, Gdk, GLib, Gtk
 APP = Path(__file__).resolve()
 STATE_DIR = Path("/var/lib/hv-installer")
 CONFIG_FILE = STATE_DIR / "config.json"
+SESSION_LOG = STATE_DIR / "operations.log"
 SOURCE_DIR = STATE_DIR / "source"
 INSTALLED_SOURCE = Path("/usr/local/share/hv-installer-gtk/cpuid_fault_emulation")
 MODULE_FILE = STATE_DIR / "cpuid_fault_emulation.ko"
@@ -44,7 +45,7 @@ SERVICE_APP = Path("/usr/local/libexec/hv-installer")
 SERVICE_PYTHON = Path("/usr/bin/python3")
 KVM_STATE = Path("/run/hv-installer-kvm-modules")
 ACTIONS = {
-    "inspect": False, "install": True, "start": True, "stop": True,
+    "inspect": False, "logs": False, "install": True, "start": True, "stop": True,
     "update": True, "uninstall": True, "download": True, "disable_umip": True,
     "enable_umip": True, "bootloader": False, "disable_umip_entry": True,
     "enable_umip_entry": True, "list_games": False, "configure_games": True,
@@ -171,6 +172,20 @@ def save_config(value, path=CONFIG_FILE):
     temporary.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
     temporary.chmod(0o600); temporary.replace(path)
     return config
+
+
+def append_operation_log(content, path=SESSION_LOG, limit=128 * 1024):
+    try: existing = path.read_bytes()
+    except OSError: existing = b""
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_bytes((existing + content.encode(errors="replace"))[-limit:])
+    temporary.chmod(0o644); temporary.replace(path)
+
+
+def read_operation_log(path=SESSION_LOG):
+    try: return path.read_text(errors="replace") or "No operation logs are available yet."
+    except OSError: return "No operation logs are available yet."
 
 
 def game_selection_action(appids):
@@ -322,7 +337,8 @@ def as_desktop_user(args):
 
 def run(args, cwd=None, user=False, env=None):
     argv = as_desktop_user(args) if user else args
-    print("+", " ".join(str(part) for part in argv), flush=True)
+    line = "+ " + " ".join(str(part) for part in argv)
+    print(line, flush=True); append_operation_log(line + "\n")
     result = subprocess.run(argv, cwd=cwd, env=env)
     if result.returncode: raise BackendError(f"Command failed with status {result.returncode}: {args[0]}")
 
@@ -855,7 +871,7 @@ def backend(action, values):
     if ACTIONS[action] and os.geteuid() != 0: raise BackendError("Administrator privileges are required")
     if ACTIONS[action] and APP != SERVICE_APP: raise BackendError("Privileged actions require the verified installed backend")
     dispatch = {
-        "inspect": inspect_backend, "install": install_backend, "start": start_backend,
+        "inspect": inspect_backend, "logs": lambda: print(read_operation_log()), "install": install_backend, "start": start_backend,
         "stop": stop_backend, "update": update_backend, "uninstall": uninstall_backend, "download": download_backend,
         "bootloader": lambda: print(bootloader()), "list_games": list_games_backend,
         "configure_games": lambda: configure_games_backend(values), "disable_games": disable_games_backend,
@@ -891,8 +907,11 @@ def daemon_server(socket_path, user, uid, gid):
                     environment = {"SUDO_USER": user, "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
                     process = subprocess.Popen([str(SERVICE_PYTHON), str(SERVICE_APP), "--backend", action, *values],
                                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment)
-                    for output in process.stdout: send_message(connection, {"type": "output", "data": output})
-                    send_message(connection, {"type": "done", "code": process.wait()})
+                    append_operation_log(f"[{time.strftime('%Y-%m-%dT%H:%M:%S%z')}] {action}\n")
+                    for output in process.stdout:
+                        append_operation_log(output); send_message(connection, {"type": "output", "data": output})
+                    code = process.wait(); append_operation_log(f"exit={code}\n")
+                    send_message(connection, {"type": "done", "code": code})
                 except Exception as error:
                     send_message(connection, {"type": "output", "data": f"{error}\n"})
                     send_message(connection, {"type": "done", "code": 1})
@@ -1100,6 +1119,8 @@ class App(Adw.Application):
         content.append(games)
 
         maintenance = Adw.PreferencesGroup(title="Maintenance")
+        maintenance.add(self.action_row("Operation log", "View recent privileged operation output",
+                                        "View…", self.show_logs))
         maintenance.add(self.action_row("Remove module", "Stop and uninstall CPUID Fault Emulation",
                                         "Remove…", self.confirm_uninstall, destructive=True))
         content.append(maintenance)
@@ -1180,6 +1201,19 @@ class App(Adw.Application):
     def periodic_refresh(self):
         if self.win.get_visible(): self.refresh_background()
         return GLib.SOURCE_CONTINUE
+
+    def show_logs(self, *_args):
+        self.read("logs", self.show_log)
+
+    def show_log(self, code, output):
+        view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR,
+                            left_margin=10, right_margin=10, top_margin=8, bottom_margin=8)
+        view.get_buffer().set_text(output.strip() or "No operation logs are available yet.")
+        scroll = Gtk.ScrolledWindow(min_content_height=220, max_content_height=420,
+                                    propagate_natural_height=True, css_classes=["output"])
+        scroll.set_child(view)
+        dialog = Adw.AlertDialog(heading="Operation log", extra_child=scroll)
+        dialog.add_response("close", "Close"); dialog.present(self.win)
 
     def test_cpuid(self, *_args, silent=False):
         self.probe_started = True
