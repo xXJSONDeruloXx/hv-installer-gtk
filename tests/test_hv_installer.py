@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import io
 import json
@@ -19,7 +20,7 @@ spec.loader.exec_module(gui)
 class InstallerTests(unittest.TestCase):
     def test_every_capability_is_exposed(self):
         self.assertEqual(set(gui.ACTIONS), {
-            "inspect", "logs", "install", "start", "stop", "update", "uninstall", "download", "import_source", "configure_repository",
+            "inspect", "logs", "clear_logs", "install", "start", "stop", "update", "uninstall", "download", "import_source", "configure_repository", "select_source", "cleanup_source", "configure_helper", "validate_hardware",
             "disable_umip", "enable_umip", "bootloader", "disable_umip_entry",
             "enable_umip_entry", "list_games", "configure_games", "disable_games",
             "cpuid_test", "reboot",
@@ -63,7 +64,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(gui.game_selection_action(["42"]), ("configure_games", ["42"]))
 
     def test_read_only_actions_do_not_prompt_for_privileges(self):
-        for action in ("inspect", "logs", "bootloader", "list_games", "cpuid_test"):
+        for action in ("inspect", "logs", "bootloader", "list_games", "cpuid_test", "validate_hardware"):
             self.assertNotIn("pkexec", gui.command(action, "deck"))
 
     def test_status_output_is_parsed_with_safe_defaults(self):
@@ -98,6 +99,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(defaults["setup_method"], "bundled")
         self.assertEqual(defaults["game_module_source"], "bundled")
         self.assertEqual(defaults["module_repository"], "default")
+        self.assertFalse(defaults["umip_helper"])
         self.assertEqual(
             gui.normalize_config({
                 "setup_method": "invalid",
@@ -160,6 +162,34 @@ class InstallerTests(unittest.TestCase):
             "https://api.github.com/repos/owner/repository/releases/latest",
         )
 
+    def test_release_checksum_is_verified_when_published(self):
+        kernel = "6.9.0"
+        module = b"module-bytes"
+        digest = hashlib.sha256(module).hexdigest()
+        release = {"assets": [
+            {"name": f"cpuid_fault_emulation-{kernel}.ko", "browser_download_url": "https://example.test/module.ko"},
+            {"name": f"cpuid_fault_emulation-{kernel}.ko.sha256", "browser_download_url": "https://example.test/module.ko.sha256"},
+        ]}
+        responses = [io.BytesIO(json.dumps(release).encode()), io.BytesIO(module), io.BytesIO(f"{digest}  module.ko\n".encode())]
+        with tempfile.TemporaryDirectory() as directory:
+            result = gui.download_prebuilt_module(gui.default_config(), kernel, Path(directory) / "module.ko",
+                opener=lambda _request, timeout: responses.pop(0), validator=lambda *_: True)
+            self.assertEqual(result.read_bytes(), module)
+
+    def test_release_checksum_mismatch_discards_module(self):
+        kernel = "6.9.0"
+        release = {"assets": [
+            {"name": f"cpuid_fault_emulation-{kernel}.ko", "browser_download_url": "https://example.test/module.ko"},
+            {"name": f"cpuid_fault_emulation-{kernel}.ko.sha256", "browser_download_url": "https://example.test/module.ko.sha256"},
+        ]}
+        responses = [io.BytesIO(json.dumps(release).encode()), io.BytesIO(b"module"), io.BytesIO(("0" * 64).encode())]
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "module.ko"
+            with self.assertRaises(gui.BackendError):
+                gui.download_prebuilt_module(gui.default_config(), kernel, destination,
+                    opener=lambda _request, timeout: responses.pop(0), validator=lambda *_: True)
+            self.assertFalse(destination.exists())
+
     def test_prebuilt_module_download_is_atomic_and_validated(self):
         kernel = "6.9.0"
         metadata = json.dumps({"assets": [{
@@ -199,12 +229,18 @@ class InstallerTests(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertFalse(destination.with_suffix(".tmp").exists())
 
-    def test_downloaded_module_is_the_selected_explicit_module(self):
-        self.assertEqual(
-            gui.selected_module_file({"setup_method": "download"}),
-            gui.DOWNLOADED_MODULE_FILE,
-        )
+    def test_downloaded_and_manual_modules_are_distinct_explicit_artifacts(self):
+        self.assertEqual(gui.selected_module_file({"setup_method": "download"}), gui.DOWNLOADED_MODULE_FILE)
+        self.assertEqual(gui.selected_module_file({"setup_method": "manual"}), gui.MANUAL_MODULE_FILE)
         self.assertIsNone(gui.selected_module_file({"setup_method": "bundled"}))
+
+    def test_source_selection_does_not_implicitly_change_game_source(self):
+        config = {**gui.default_config(), "game_module_source": "download"}
+        with patch.object(gui, "load_config", return_value=config), patch.object(gui, "save_config") as save:
+            gui.select_source_backend(["manual"])
+        saved = save.call_args.args[0]
+        self.assertEqual(saved["setup_method"], "manual")
+        self.assertEqual(saved["game_module_source"], "download")
 
     def test_repository_configuration_validates_and_persists_custom_sources(self):
         with patch.object(gui, "load_config", return_value=gui.default_config()), \
@@ -237,6 +273,24 @@ class InstallerTests(unittest.TestCase):
                 destination,
             )
 
+    def test_manual_build_promotes_only_a_valid_module(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"; source.mkdir(); (source / "Makefile").write_text("all:\n")
+            destination = Path(directory) / "artifact/module.ko"
+            def runner(_args, cwd=None):
+                if _args == ["make"]: (cwd / "cpuid_fault_emulation.ko").write_bytes(b"valid")
+            gui.build_manual_module(source, destination, runner=runner, validator=lambda path, _: path.read_bytes() == b"valid", kernel="test")
+            self.assertEqual(destination.read_bytes(), b"valid")
+
+    def test_failed_manual_build_preserves_previous_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"; source.mkdir(); (source / "Makefile").write_text("all:\n")
+            destination = Path(directory) / "artifact/module.ko"; destination.parent.mkdir(); destination.write_bytes(b"previous")
+            with self.assertRaises(gui.BackendError):
+                gui.build_manual_module(source, destination, runner=lambda *_args, **_kwargs: None,
+                                        validator=lambda *_: False, kernel="test")
+            self.assertEqual(destination.read_bytes(), b"previous")
+
     def test_manual_source_zip_is_staged_without_preserving_its_wrapper(self):
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / "source.zip"
@@ -256,12 +310,37 @@ class InstallerTests(unittest.TestCase):
             with self.assertRaises(gui.BackendError):
                 gui.stage_manual_source(archive, Path(directory) / "staged")
 
+    def test_operation_log_can_be_cleared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "operation.log"
+            path.write_text("secret-free diagnostic\n")
+            gui.clear_operation_log(path)
+            self.assertEqual(gui.read_operation_log(path), "No operation logs are available yet.")
+
     def test_operation_log_is_bounded_and_readable(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "operation.log"
             gui.append_operation_log("first\n", path, limit=10)
             gui.append_operation_log("second\n", path, limit=10)
             self.assertEqual(gui.read_operation_log(path), "st\nsecond\n")
+
+    def test_process_reconciliation_finds_configured_steam_games(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            process = proc / "123"; process.mkdir()
+            (process / "environ").write_bytes(b"SteamAppId=42\0")
+            (process / "stat").write_text("123 (game) S " + "0 " * 18 + "987 0\n")
+            self.assertEqual(gui.running_game_processes({"42"}, proc), {("42", "123"): "987"})
+
+    def test_game_catalog_distinguishes_steam_and_shortcuts(self):
+        with patch.object(gui, "steam_library_games", return_value={"42": "Steam Game"}), \
+             patch.object(gui, "shortcut_games", return_value={"99": "Shortcut"}):
+            self.assertEqual(gui.game_catalog(), {"42": ("Steam Game", "steam"), "99": ("Shortcut", "shortcut")})
+
+    def test_game_service_carries_independent_module_source(self):
+        unit = gui.game_service_contents(["42"], Path("/steam.log"), "download")
+        self.assertIn('Environment="HV_GAME_MODULE_SOURCE=download"', unit)
+        self.assertIn('Environment="HV_GAME_APPIDS=42"', unit)
 
     def test_steam_library_discovery_includes_installed_apps(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -278,6 +357,21 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(gui.shortcut_appid("42", "missing", {"42"}), "42")
         self.assertEqual(gui.shortcut_appid("42", "missing", {"42"}, require_environment=True), "42")
         self.assertIsNone(gui.shortcut_appid(str(42 << 32), "missing", {"42"}, require_environment=True))
+
+    def test_umip_helper_is_opt_in_and_rolled_back_after_module_start_failure(self):
+        config = {**gui.default_config(), "umip_helper": True}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(gui, "KVM_STATE", Path(directory) / "kvm-state"), \
+             patch.object(gui, "load_config", return_value=config), \
+             patch.object(gui, "module_installed", return_value=True), \
+             patch.object(gui, "module_loaded", return_value=False), \
+             patch.object(gui, "module_matches", return_value=True), \
+             patch.object(gui, "kernel_module_loaded", return_value=False), \
+             patch.object(gui, "start_umip_helper", return_value=True), \
+             patch.object(gui, "stop_umip_helper") as stop, \
+             patch.object(gui, "run", side_effect=gui.BackendError("failed")):
+            with self.assertRaises(gui.BackendError): gui._start_backend()
+        stop.assert_called_once()
 
     def test_real_backend_inspection_is_machine_readable(self):
         result = subprocess.run(gui.command("inspect", "test-user"), text=True, capture_output=True)
