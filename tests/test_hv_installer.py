@@ -2,6 +2,7 @@ import importlib.util
 import os
 import subprocess
 import tarfile
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -87,6 +88,30 @@ class InstallerTests(unittest.TestCase):
     def test_persistent_artifacts_are_root_owned_locations(self):
         self.assertEqual(gui.SERVICE_APP.parent, Path("/usr/local/libexec"))
         self.assertEqual(gui.MODULE_FILE.parent, Path("/var/lib/hv-installer"))
+
+    def test_config_defaults_are_safe_and_unknown_values_are_reset(self):
+        defaults = gui.default_config()
+        self.assertEqual(defaults["setup_method"], "bundled")
+        self.assertEqual(defaults["game_module_source"], "bundled")
+        self.assertEqual(defaults["module_repository"], "default")
+        self.assertEqual(
+            gui.normalize_config({
+                "setup_method": "invalid",
+                "game_module_source": "download",
+                "module_repository": "unknown",
+                "custom_module_repository": 12,
+            }),
+            {**defaults, "game_module_source": "download"},
+        )
+
+    def test_config_round_trip_uses_the_requested_state_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state" / "config.json"
+            self.assertEqual(gui.load_config(path), gui.default_config())
+            expected = {**gui.default_config(), "setup_method": "download"}
+            gui.save_config(expected, path)
+            self.assertEqual(gui.load_config(path), expected)
+            self.assertFalse(path.with_suffix(".tmp").exists())
 
     def test_shortcut_appid_supports_full_and_high_word_ids(self):
         self.assertEqual(gui.shortcut_appid(str(42 << 32), "missing", {"42"}), "42")

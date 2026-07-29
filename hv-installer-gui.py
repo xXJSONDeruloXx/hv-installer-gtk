@@ -30,6 +30,7 @@ from gi.repository import Adw, Gdk, GLib, Gtk
 
 APP = Path(__file__).resolve()
 STATE_DIR = Path("/var/lib/hv-installer")
+CONFIG_FILE = STATE_DIR / "config.json"
 SOURCE_DIR = STATE_DIR / "source"
 INSTALLED_SOURCE = Path("/usr/local/share/hv-installer-gtk/cpuid_fault_emulation")
 MODULE_FILE = STATE_DIR / "cpuid_fault_emulation.ko"
@@ -128,6 +129,42 @@ def daemon_command(user, socket_path, uid, gid):
 
 def bootstrap_daemon_command(user, bundle, socket_path, uid, gid):
     return bootstrap_command("__daemon__", user, bundle, [str(socket_path), str(uid), str(gid)])
+
+
+def default_config():
+    return {
+        "setup_method": "bundled",
+        "game_module_source": "bundled",
+        "module_repository": "default",
+        "custom_module_repository": "",
+        "manual_source": "",
+    }
+
+
+def normalize_config(value):
+    config = default_config()
+    if not isinstance(value, dict): return config
+    for key in ("setup_method", "game_module_source"):
+        if value.get(key) in {"bundled", "download", "manual"}: config[key] = value[key]
+    if value.get("module_repository") in {"default", "alternative", "custom"}:
+        config["module_repository"] = value["module_repository"]
+    for key in ("custom_module_repository", "manual_source"):
+        if isinstance(value.get(key), str): config[key] = value[key]
+    return config
+
+
+def load_config(path=CONFIG_FILE):
+    try: return normalize_config(json.loads(path.read_text()))
+    except (OSError, json.JSONDecodeError): return default_config()
+
+
+def save_config(value, path=CONFIG_FILE):
+    config = normalize_config(value)
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+    temporary.chmod(0o600); temporary.replace(path)
+    return config
 
 
 def game_selection_action(appids):
