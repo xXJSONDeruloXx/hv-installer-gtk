@@ -1126,7 +1126,9 @@ class App(Adw.Application):
         buttons = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
         self.setup_umip = Gtk.Button(label="Configure boot options", visible=False)
         self.setup_umip.connect("clicked", self.confirm_umip); buttons.append(self.setup_umip)
-        self.install_button = Gtk.Button(label="Install module", css_classes=["suggested-action", "pill"])
+        self.download_button = Gtk.Button(label="Download prebuilt module")
+        self.download_button.connect("clicked", lambda *_: self.confirm_download()); buttons.append(self.download_button)
+        self.install_button = Gtk.Button(label="Build bundled module", css_classes=["suggested-action", "pill"])
         self.install_button.connect("clicked", lambda *_: self.confirm_install()); buttons.append(self.install_button)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         box.append(self.setup_description); box.append(buttons); self.setup_status.set_child(box)
@@ -1298,6 +1300,10 @@ class App(Adw.Application):
     def toggle_module(self, _):
         if not self.state["matching"]: self.confirm_update()
         else: self.execute("stop" if self.state["loaded"] else "start")
+
+    def confirm_download(self, *_):
+        self.confirm("Download prebuilt module?", "A module matching your current kernel will be downloaded from the selected trusted repository.",
+                     "Download", "download")
 
     def confirm_install(self, *_):
         local = self.state["os"] in {"bazzite", "steamos"}
