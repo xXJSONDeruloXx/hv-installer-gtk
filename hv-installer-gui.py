@@ -1128,6 +1128,8 @@ class App(Adw.Application):
         self.setup_umip.connect("clicked", self.confirm_umip); buttons.append(self.setup_umip)
         self.download_button = Gtk.Button(label="Download prebuilt module")
         self.download_button.connect("clicked", lambda *_: self.confirm_download()); buttons.append(self.download_button)
+        self.import_button = Gtk.Button(label="Import manual source…")
+        self.import_button.connect("clicked", self.choose_manual_source); buttons.append(self.import_button)
         self.install_button = Gtk.Button(label="Build bundled module", css_classes=["suggested-action", "pill"])
         self.install_button.connect("clicked", lambda *_: self.confirm_install()); buttons.append(self.install_button)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
@@ -1156,6 +1158,8 @@ class App(Adw.Application):
         self.probe_row.add_suffix(self.probe_icon); self.probe_row.add_suffix(test); module.add(self.probe_row)
         self.update_row = self.action_row("Kernel module", "Rebuild for the current kernel", "Update…", self.confirm_update)
         module.add(self.update_row)
+        self.repository_row = self.action_row("Prebuilt repository", "Choose the source for downloaded modules", "Configure…", self.configure_repository)
+        module.add(self.repository_row)
         self.umip_row = Adw.ActionRow(title="UMIP boot option")
         self.umip_button = Gtk.Button(label="Configure…", valign=Gtk.Align.CENTER)
         self.umip_button.connect("clicked", self.toggle_umip); self.umip_row.add_suffix(self.umip_button); module.add(self.umip_row)
@@ -1300,6 +1304,29 @@ class App(Adw.Application):
     def toggle_module(self, _):
         if not self.state["matching"]: self.confirm_update()
         else: self.execute("stop" if self.state["loaded"] else "start")
+
+    def choose_manual_source(self, *_):
+        dialog = Gtk.FileDialog(title="Choose module source")
+        def chosen(source, result):
+            try: selected = dialog.open_finish(result).get_path()
+            except GLib.Error: return
+            self.confirm("Import manual source?", "The selected Makefile will later run with administrator privileges. Only import source you trust.",
+                         "Import", callback=lambda: self.execute("import_source", [selected]))
+        dialog.open(self.win, None, chosen)
+
+    def configure_repository(self, *_):
+        choices = Gtk.DropDown.new_from_strings(["Default", "Alternative", "Custom GitHub repository"])
+        entry = Gtk.Entry(placeholder_text="owner/repository", visible=False)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12); box.append(choices); box.append(entry)
+        choices.connect("notify::selected", lambda *_: entry.set_visible(choices.get_selected() == 2))
+        dialog = Adw.AlertDialog(heading="Prebuilt module repository", body="Only choose a custom repository you trust.", extra_child=box)
+        dialog.add_response("cancel", "Cancel"); dialog.add_response("apply", "Apply")
+        def apply(_, response):
+            if response != "apply": return
+            values = ["default", "alternative", "custom"][choices.get_selected()]
+            arguments = [values, entry.get_text().strip()] if values == "custom" else [values]
+            self.execute("configure_repository", arguments)
+        dialog.connect("response", apply); dialog.present(self.win)
 
     def confirm_download(self, *_):
         self.confirm("Download prebuilt module?", "A module matching your current kernel will be downloaded from the selected trusted repository.",
