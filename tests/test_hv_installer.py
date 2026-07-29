@@ -249,6 +249,13 @@ class InstallerTests(unittest.TestCase):
             gui.DOWNLOADED_MODULE_FILE.write_bytes(b"download")
             self.assertEqual(gui.available_artifacts(), {"bundled", "download"})
 
+    def test_game_source_selection_reconfigures_an_existing_watcher(self):
+        with patch.object(gui, "load_config", return_value=gui.default_config()), \
+             patch.object(gui, "save_config"), patch.object(gui, "configured_appids", return_value={"42"}), \
+             patch.object(gui, "configure_games_backend") as configure:
+            gui.select_source_backend(["download", "games"])
+        configure.assert_called_once_with(["42"])
+
     def test_source_selection_does_not_implicitly_change_game_source(self):
         config = {**gui.default_config(), "game_module_source": "download"}
         with patch.object(gui, "load_config", return_value=config), patch.object(gui, "save_config") as save:
@@ -375,6 +382,13 @@ class InstallerTests(unittest.TestCase):
             steamapps.mkdir(parents=True)
             shutil.copyfile(FIXTURES / "appmanifest_42.acf", steamapps / "appmanifest_42.acf")
             self.assertEqual(gui.steam_library_games(home), {"42": "Fixture Game"})
+
+    def test_shortcut_fixture_is_discovered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory); config = home / ".local/share/Steam/userdata/1/config"; config.mkdir(parents=True)
+            shutil.copyfile(FIXTURES / "shortcuts.vdf", config / "shortcuts.vdf")
+            with patch.object(gui, "steam_home", return_value=home):
+                self.assertEqual(gui.shortcut_games(), {"99": "Fixture Shortcut"})
 
     def test_shortcut_appid_supports_full_and_high_word_ids(self):
         self.assertEqual(gui.shortcut_appid(str(42 << 32), "missing", {"42"}), "42")

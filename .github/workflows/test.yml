@@ -18,3 +18,15 @@ jobs:
           sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
       - name: Run checks
         run: make check PYTHON=/usr/bin/python3
+
+  helper-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned umipcompatd source
+        run: python3 packaging/build-umipcompatd.py
+      - name: Verify helper release inputs
+        run: |
+          test -x build/release-assets/umipcompatd/umipcompatd
+          test -s build/release-assets/umipcompatd/umipcompatd-source.tar.gz
+          test -s build/release-assets/umipcompatd/LICENSE
