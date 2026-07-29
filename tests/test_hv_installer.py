@@ -19,7 +19,7 @@ spec.loader.exec_module(gui)
 class InstallerTests(unittest.TestCase):
     def test_every_capability_is_exposed(self):
         self.assertEqual(set(gui.ACTIONS), {
-            "inspect", "logs", "install", "start", "stop", "update", "uninstall", "download", "import_source",
+            "inspect", "logs", "install", "start", "stop", "update", "uninstall", "download", "import_source", "configure_repository",
             "disable_umip", "enable_umip", "bootloader", "disable_umip_entry",
             "enable_umip_entry", "list_games", "configure_games", "disable_games",
             "cpuid_test", "reboot",
@@ -205,6 +205,14 @@ class InstallerTests(unittest.TestCase):
             gui.DOWNLOADED_MODULE_FILE,
         )
         self.assertIsNone(gui.selected_module_file({"setup_method": "bundled"}))
+
+    def test_repository_configuration_validates_and_persists_custom_sources(self):
+        with patch.object(gui, "load_config", return_value=gui.default_config()), \
+             patch.object(gui, "save_config") as save:
+            gui.configure_repository_backend(["custom", "owner/repository"])
+        saved = save.call_args.args[0]
+        self.assertEqual(saved["module_repository"], "custom")
+        self.assertEqual(saved["custom_module_repository"], "https://api.github.com/repos/owner/repository/releases/latest")
 
     def test_download_action_selects_the_validated_prebuilt_module(self):
         config = gui.default_config()

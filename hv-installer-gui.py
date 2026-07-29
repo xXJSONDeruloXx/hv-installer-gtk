@@ -46,7 +46,7 @@ SERVICE_APP = Path("/usr/local/libexec/hv-installer")
 SERVICE_PYTHON = Path("/usr/bin/python3")
 KVM_STATE = Path("/run/hv-installer-kvm-modules")
 ACTIONS = {
-    "inspect": False, "logs": False, "install": True, "start": True, "stop": True, "import_source": True,
+    "inspect": False, "logs": False, "install": True, "start": True, "stop": True, "import_source": True, "configure_repository": True,
     "update": True, "uninstall": True, "download": True, "disable_umip": True,
     "enable_umip": True, "bootloader": False, "disable_umip_entry": True,
     "enable_umip_entry": True, "list_games": False, "configure_games": True,
@@ -569,6 +569,15 @@ def install_dkms():
     print("Module installed successfully.")
 
 
+def configure_repository_backend(values):
+    if not values or values[0] not in {"default", "alternative", "custom"}: raise BackendError("Unknown module repository")
+    if values[0] == "custom" and len(values) != 2: raise BackendError("Enter a custom GitHub repository")
+    if values[0] != "custom" and len(values) != 1: raise BackendError("Invalid repository configuration")
+    config = load_config(); config["module_repository"] = values[0]
+    config["custom_module_repository"] = github_release_api_url(values[1]) if values[0] == "custom" else ""
+    save_config(config); print("Module repository updated.")
+
+
 def import_source_backend(values):
     if len(values) != 1: raise BackendError("Choose one manual source folder or ZIP file")
     staged = stage_manual_source(Path(values[0]), STATE_DIR / "manual-source")
@@ -914,7 +923,7 @@ def backend(action, values):
     if ACTIONS[action] and os.geteuid() != 0: raise BackendError("Administrator privileges are required")
     if ACTIONS[action] and APP != SERVICE_APP: raise BackendError("Privileged actions require the verified installed backend")
     dispatch = {
-        "inspect": inspect_backend, "logs": lambda: print(read_operation_log()), "import_source": lambda: import_source_backend(values), "install": install_backend, "start": start_backend,
+        "inspect": inspect_backend, "logs": lambda: print(read_operation_log()), "configure_repository": lambda: configure_repository_backend(values), "import_source": lambda: import_source_backend(values), "install": install_backend, "start": start_backend,
         "stop": stop_backend, "update": update_backend, "uninstall": uninstall_backend, "download": download_backend,
         "bootloader": lambda: print(bootloader()), "list_games": list_games_backend,
         "configure_games": lambda: configure_games_backend(values), "disable_games": disable_games_backend,
