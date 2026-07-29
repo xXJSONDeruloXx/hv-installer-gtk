@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -11,7 +12,9 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-APP = Path(__file__).resolve().parents[1] / "hv-installer-gui.py"
+ROOT = Path(__file__).resolve().parents[1]
+APP = ROOT / "hv-installer-gui.py"
+FIXTURES = Path(__file__).parent / "fixtures"
 spec = importlib.util.spec_from_file_location("hv_installer_gui", APP)
 gui = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gui)
@@ -134,16 +137,10 @@ class InstallerTests(unittest.TestCase):
             gui.github_release_api_url("owner/repository?unsafe=true")
 
     def test_release_asset_selection_requires_an_exact_https_kernel_asset(self):
-        release = {
-            "assets": [
-                {"name": "cpuid_fault_emulation-6.9.0.ko", "browser_download_url": "http://invalid/module.ko"},
-                {"name": "cpuid_fault_emulation-6.9.0-debug.ko", "browser_download_url": "https://example.test/debug.ko"},
-                {"name": "cpuid_fault_emulation-6.9.0.ko", "browser_download_url": "https://example.test/module.ko"},
-            ]
-        }
+        release = json.loads((FIXTURES / "github-release.json").read_text())
         self.assertEqual(
             gui.release_asset_url(release, "6.9.0"),
-            "https://example.test/module.ko",
+            "https://github.com/example/modules/releases/download/v0.1.0/cpuid_fault_emulation-6.9.0.ko",
         )
         with self.assertRaises(gui.BackendError):
             gui.release_asset_url({"assets": []}, "6.9.0")
@@ -190,6 +187,16 @@ class InstallerTests(unittest.TestCase):
                     opener=lambda _request, timeout: responses.pop(0), validator=lambda *_: True)
             self.assertFalse(destination.exists())
 
+    def test_module_validation_checks_name_and_exact_kernel(self):
+        results = [subprocess.CompletedProcess([], 0, "cpuid_fault_emulation\n"),
+                   subprocess.CompletedProcess([], 0, "6.9.0 SMP\n")]
+        with patch.object(gui, "quiet", side_effect=results), patch.object(gui.shutil, "which", return_value="/usr/bin/modinfo"):
+            self.assertTrue(gui.module_file_matches(Path("module.ko"), "6.9.0"))
+        results = [subprocess.CompletedProcess([], 0, "untrusted\n"),
+                   subprocess.CompletedProcess([], 0, "6.9.0 SMP\n")]
+        with patch.object(gui, "quiet", side_effect=results), patch.object(gui.shutil, "which", return_value="/usr/bin/modinfo"):
+            self.assertFalse(gui.module_file_matches(Path("module.ko"), "6.9.0"))
+
     def test_prebuilt_module_download_is_atomic_and_validated(self):
         kernel = "6.9.0"
         metadata = json.dumps({"assets": [{
@@ -234,6 +241,14 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(gui.selected_module_file({"setup_method": "manual"}), gui.MANUAL_MODULE_FILE)
         self.assertIsNone(gui.selected_module_file({"setup_method": "bundled"}))
 
+    def test_available_artifacts_reports_managed_sources(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(gui, "DOWNLOADED_MODULE_FILE", Path(directory) / "download.ko"), \
+             patch.object(gui, "MANUAL_MODULE_FILE", Path(directory) / "manual.ko"), \
+             patch.object(gui, "module_installed", return_value=True):
+            gui.DOWNLOADED_MODULE_FILE.write_bytes(b"download")
+            self.assertEqual(gui.available_artifacts(), {"bundled", "download"})
+
     def test_source_selection_does_not_implicitly_change_game_source(self):
         config = {**gui.default_config(), "game_module_source": "download"}
         with patch.object(gui, "load_config", return_value=config), patch.object(gui, "save_config") as save:
@@ -259,7 +274,14 @@ class InstallerTests(unittest.TestCase):
         download.assert_called_once()
         saved = save.call_args.args[0]
         self.assertEqual(saved["setup_method"], "download")
-        self.assertEqual(saved["game_module_source"], "download")
+        self.assertEqual(saved["game_module_source"], "bundled")
+
+    def test_manual_source_directory_rejects_symbolic_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"; source.mkdir(); (source / "Makefile").write_text("all:\n")
+            (source / "outside").symlink_to(Path(directory) / "missing")
+            with self.assertRaises(gui.BackendError):
+                gui.stage_manual_source(source, Path(directory) / "staged")
 
     def test_manual_source_directory_is_copied_and_selected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -304,11 +326,8 @@ class InstallerTests(unittest.TestCase):
 
     def test_manual_source_zip_rejects_unsafe_paths(self):
         with tempfile.TemporaryDirectory() as directory:
-            archive = Path(directory) / "unsafe.zip"
-            with zipfile.ZipFile(archive, "w") as contents:
-                contents.writestr("../outside", "unsafe")
             with self.assertRaises(gui.BackendError):
-                gui.stage_manual_source(archive, Path(directory) / "staged")
+                gui.stage_manual_source(FIXTURES / "unsafe-source.zip", Path(directory) / "staged")
 
     def test_operation_log_can_be_cleared(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -332,6 +351,13 @@ class InstallerTests(unittest.TestCase):
             (process / "stat").write_text("123 (game) S " + "0 " * 18 + "987 0\n")
             self.assertEqual(gui.running_game_processes({"42"}, proc), {("42", "123"): "987"})
 
+    def test_game_listing_marks_running_games(self):
+        with patch.object(gui, "game_catalog", return_value={"42": ("Steam Game", "steam")}), \
+             patch.object(gui, "running_game_processes", return_value={("42", "123"): "987"}), \
+             patch("sys.stdout", new_callable=io.StringIO) as output:
+            gui.list_games_backend()
+        self.assertEqual(output.getvalue(), "42\tsteam\trunning\tSteam Game\n")
+
     def test_game_catalog_distinguishes_steam_and_shortcuts(self):
         with patch.object(gui, "steam_library_games", return_value={"42": "Steam Game"}), \
              patch.object(gui, "shortcut_games", return_value={"99": "Shortcut"}):
@@ -347,10 +373,8 @@ class InstallerTests(unittest.TestCase):
             home = Path(directory)
             steamapps = home / ".local/share/Steam/steamapps"
             steamapps.mkdir(parents=True)
-            (steamapps / "appmanifest_42.acf").write_text(
-                '"AppState"\n{\n  "appid" "42"\n  "name" "Example Game"\n}\n'
-            )
-            self.assertEqual(gui.steam_library_games(home), {"42": "Example Game"})
+            shutil.copyfile(FIXTURES / "appmanifest_42.acf", steamapps / "appmanifest_42.acf")
+            self.assertEqual(gui.steam_library_games(home), {"42": "Fixture Game"})
 
     def test_shortcut_appid_supports_full_and_high_word_ids(self):
         self.assertEqual(gui.shortcut_appid(str(42 << 32), "missing", {"42"}), "42")
@@ -378,6 +402,16 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("installed=", result.stdout)
         self.assertIn("watcher=", result.stdout)
+
+    def test_release_pipeline_pins_helper_fork_and_corresponding_source(self):
+        builder = (ROOT / "packaging/build-umipcompatd.py").read_text()
+        release = (ROOT / "packaging/build-release.py").read_text()
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertIn("xXJSONDeruloXx/umipcompatd.git", builder)
+        self.assertRegex(builder, r'COMMIT = "[0-9a-f]{40}"')
+        for artifact in ("umipcompatd-source.tar.gz", "LICENSE", "SOURCE"):
+            self.assertIn(artifact, release)
+        self.assertIn("packaging/build-umipcompatd.py", makefile)
 
     def test_app_has_no_runtime_script_dependency_or_em_dashes(self):
         text = APP.read_text()

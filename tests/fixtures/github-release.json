@@ -1,0 +1,13 @@
+{
+  "tag_name": "v0.1.0",
+  "assets": [
+    {
+      "name": "cpuid_fault_emulation-6.9.0.ko",
+      "browser_download_url": "https://github.com/example/modules/releases/download/v0.1.0/cpuid_fault_emulation-6.9.0.ko"
+    },
+    {
+      "name": "cpuid_fault_emulation-6.9.0.ko.sha256",
+      "browser_download_url": "https://github.com/example/modules/releases/download/v0.1.0/cpuid_fault_emulation-6.9.0.ko.sha256"
+    }
+  ]
+}

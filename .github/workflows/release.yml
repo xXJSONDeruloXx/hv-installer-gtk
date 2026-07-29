@@ -16,7 +16,7 @@ jobs:
       - name: Install GTK dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 clang llvm libelf-dev zlib1g-dev pkg-config autoconf automake autopoint flex bison
       - name: Build release ZIP
         run: make release PYTHON=/usr/bin/python3
       - name: Publish release

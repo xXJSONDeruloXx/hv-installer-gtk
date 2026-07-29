@@ -140,7 +140,7 @@ if [ -f "$tmp/umipcompatd/umipcompatd" ]; then
     install -Dm644 "$tmp/umipcompatd/umipcompatd.service" /etc/systemd/system/umipcompatd.service
     mkdir -p /usr/local/share/hv-installer-gtk/umipcompatd
     cp -f "$tmp/umipcompatd/LICENSE" "$tmp/umipcompatd/SOURCE" "$tmp/umipcompatd/umipcompatd-source.tar.gz" /usr/local/share/hv-installer-gtk/umipcompatd/
-    systemctl daemon-reload
+    if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload; fi
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database /usr/local/share/applications || true; fi
 if [ "$action" = "__daemon__" ]; then
@@ -235,6 +235,7 @@ def parse_status(output):
         "source": values.get("source") if values.get("source") in {"bundled", "download", "manual"} else "bundled",
         "game_source": values.get("game_source") if values.get("game_source") in {"bundled", "download", "manual"} else "bundled",
         "helper": values.get("helper", "disabled") if values.get("helper") in {"disabled", "enabled", "running", "missing"} else "disabled",
+        "artifacts": {item for item in values.get("artifacts", "").split(",") if item in {"bundled", "download", "manual"}},
         "watcher": values.get("watcher", "disabled") if values.get("watcher") in {"disabled", "enabled", "running"} else "disabled",
         "configured": {item for item in values.get("configured", "").split(",") if item},
     }
@@ -311,13 +312,18 @@ def stage_manual_source(archive, destination):
     try:
         if archive.is_dir():
             if not (archive / "Makefile").is_file(): raise BackendError("Manual source directory must contain a Makefile")
+            if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in archive.rglob("*")):
+                raise BackendError("Manual source directories must not contain links or special files")
             source = archive
         elif archive.is_file() and archive.suffix.lower() == ".zip":
             with zipfile.ZipFile(archive) as contents:
-                for entry in contents.infolist():
-                    path = Path(entry.filename)
-                    if path.is_absolute() or ".." in path.parts or (entry.external_attr >> 16) & 0o170000 == 0o120000:
-                        raise BackendError("Source ZIP contains an unsafe path or symbolic link")
+                entries = contents.infolist()
+                if len(entries) > 4096 or sum(entry.file_size for entry in entries) > 64 * 1024 * 1024:
+                    raise BackendError("Source ZIP exceeds the safe extraction limit")
+                for entry in entries:
+                    path = Path(entry.filename); kind = (entry.external_attr >> 16) & 0o170000
+                    if path.is_absolute() or ".." in path.parts or kind not in {0, 0o040000, 0o100000}:
+                        raise BackendError("Source ZIP contains an unsafe path, link, or special file")
                 contents.extractall(extracting)
             candidates = [extracting, *(path for path in extracting.iterdir() if path.is_dir())]
             source = next((path for path in candidates if (path / "Makefile").is_file()), None)
@@ -366,8 +372,11 @@ def verify_release_checksum(path, release, kernel, opener):
 
 
 def module_file_matches(path, kernel):
-    result = quiet(["modinfo", "-F", "vermagic", str(path)]) if shutil.which("modinfo") else None
-    return bool(result and result.returncode == 0 and result.stdout.split(" ", 1)[0].strip() == kernel)
+    if not shutil.which("modinfo"): return False
+    name = quiet(["modinfo", "-F", "name", str(path)])
+    vermagic = quiet(["modinfo", "-F", "vermagic", str(path)])
+    return bool(name.returncode == 0 and name.stdout.strip() == "cpuid_fault_emulation" and
+                vermagic.returncode == 0 and vermagic.stdout.split(" ", 1)[0].strip() == kernel)
 
 
 def download_prebuilt_module(config, kernel, destination=DOWNLOADED_MODULE_FILE,
@@ -469,6 +478,15 @@ def module_matches(config=None):
     return module_file_matches(MODULE_FILE, os.uname().release)
 
 
+def available_artifacts():
+    available = set()
+    bundled = default_config()
+    if module_installed(bundled): available.add("bundled")
+    if DOWNLOADED_MODULE_FILE.is_file(): available.add("download")
+    if MANUAL_MODULE_FILE.is_file(): available.add("manual")
+    return available
+
+
 def configured_appids():
     unit = Path("/etc/systemd/system/hv-games.service")
     try: text = unit.read_text()
@@ -517,7 +535,7 @@ def inspect_backend():
         "umip_arg": "present" if clearcpuid_configured() else "absent",
         "installed": int(module_installed()), "loaded": int(module_loaded()),
         "matching": int(module_matches()), "source": config["setup_method"], "game_source": config["game_module_source"],
-        "helper": helper, "watcher": watcher_state(),
+        "helper": helper, "artifacts": ",".join(sorted(available_artifacts())), "watcher": watcher_state(),
         "configured": ",".join(sorted(configured_appids(), key=int)),
     }
     for key, value in values.items(): print(f"{key}={value}")
@@ -547,8 +565,8 @@ def copy_source(destination, owner=None):
     return destination
 
 
-def validate_source(source):
-    if not (source / "Makefile").is_file() or not (source / "dkms.conf").is_file():
+def validate_source(source, require_dkms=False):
+    if not (source / "Makefile").is_file() or require_dkms and not (source / "dkms.conf").is_file():
         raise BackendError("Kernel module source is incomplete")
     print("Kernel module source is ready.", flush=True)
 
@@ -637,7 +655,7 @@ def install_dkms():
     old_source = Path("/var/lib/dkms/cpuid_fault_emulation/0.1/source")
     if registered and old_source.exists(): shutil.copytree(old_source.resolve(), backup)
     source = copy_source(SOURCE_DIR)
-    validate_source(source)
+    validate_source(source, require_dkms=True)
     run(["make", "clean"], cwd=source); run(["make"], cwd=source)
     if registered: run(["dkms", "remove", "cpuid_fault_emulation/0.1", "--all"])
     try:
@@ -670,10 +688,15 @@ def select_source_backend(values):
         raise BackendError("Unknown module source")
     if len(values) == 2 and values[1] not in {"setup", "games"}: raise BackendError("Unknown source target")
     config = load_config(); target = "game_module_source" if len(values) == 2 and values[1] == "games" else "setup_method"
-    config[target] = values[0]; save_config(config); print("Module source updated.")
+    config[target] = values[0]; save_config(config)
+    if target == "game_module_source" and configured_appids(): configure_games_backend(sorted(configured_appids(), key=int))
+    print("Module source updated.")
 
 
 def cleanup_source_backend():
+    if watcher_state() != "disabled": disable_games_backend()
+    with module_lock():
+        if module_loaded() or KVM_STATE.is_file(): _stop_backend()
     config = load_config()
     for path in (STATE_DIR / "manual-source", MANUAL_DIR, DOWNLOAD_DIR): shutil.rmtree(path, ignore_errors=True)
     config["setup_method"] = "bundled"; config["game_module_source"] = "bundled"; config["manual_source"] = ""
@@ -683,8 +706,8 @@ def cleanup_source_backend():
 def configure_helper_backend(values):
     if values not in (["enabled"], ["disabled"]): raise BackendError("Invalid UMIP helper setting")
     enabled = values == ["enabled"]
-    if enabled and (not UMIP_HELPER.is_file() or not UMIP_HELPER_UNIT.is_file()):
-        raise BackendError("The UMIP compatibility helper is not installed")
+    if enabled and (not UMIP_HELPER.is_file() or not UMIP_HELPER_UNIT.is_file() or not shutil.which("systemctl")):
+        raise BackendError("The UMIP compatibility helper or systemd is not installed")
     config = load_config(); config["umip_helper"] = enabled; save_config(config)
     if not enabled: stop_umip_helper()
     print(f"UMIP compatibility helper {'enabled' if enabled else 'disabled'}.")
@@ -701,7 +724,7 @@ def import_source_backend(values):
 def download_backend():
     config = load_config()
     download_prebuilt_module(config, os.uname().release)
-    config["setup_method"] = "download"; config["game_module_source"] = "download"
+    config["setup_method"] = "download"
     save_config(config)
     print(f"Downloaded module for {os.uname().release}.")
 
@@ -741,8 +764,12 @@ def umip_helper_running():
 def start_umip_helper():
     if umip_helper_running(): return False
     if not UMIP_HELPER.is_file() or not UMIP_HELPER_UNIT.is_file(): raise BackendError("The UMIP compatibility helper is not installed")
-    run(["systemctl", "start", "umipcompatd.service"])
-    if not umip_helper_running(): raise BackendError("The UMIP compatibility helper failed to initialize")
+    try:
+        run(["systemctl", "start", "umipcompatd.service"])
+        if not umip_helper_running(): raise BackendError("The UMIP compatibility helper failed to initialize")
+    except Exception:
+        quiet(["systemctl", "stop", "umipcompatd.service"])
+        raise
     return True
 
 
@@ -814,6 +841,7 @@ def disable_games_backend():
 
 def uninstall_backend():
     if watcher_state() != "disabled": disable_games_backend()
+    stop_umip_helper()
     with module_lock():
         if module_loaded() or KVM_STATE.is_file(): _stop_backend()
         selected = selected_module_file()
@@ -982,7 +1010,8 @@ def game_catalog():
 def list_games_backend():
     games = game_catalog()
     if not games: raise BackendError(f"No Steam games or shortcuts were found for {desktop_user()}")
-    for appid, (name, kind) in games.items(): print(f"{appid}\t{kind}\t{name}")
+    running = {appid for appid, _pid in running_game_processes(set(games))}
+    for appid, (name, kind) in games.items(): print(f"{appid}\t{kind}\t{'running' if appid in running else 'stopped'}\t{name}")
 
 
 def steam_log():
@@ -1151,7 +1180,9 @@ def daemon_server(socket_path, user, uid, gid):
                     append_operation_log(f"[{time.strftime('%Y-%m-%dT%H:%M:%S%z')}] {action}\n")
                     for output in process.stdout:
                         append_operation_log(output); send_message(connection, {"type": "output", "data": output})
-                    code = process.wait(); append_operation_log(f"exit={code}\n")
+                    code = process.wait()
+                    if action == "clear_logs" and code == 0: clear_operation_log()
+                    else: append_operation_log(f"exit={code}\n")
                     send_message(connection, {"type": "done", "code": code})
                 except Exception as error:
                     send_message(connection, {"type": "output", "data": f"{error}\n"})
@@ -1364,7 +1395,7 @@ class App(Adw.Application):
         content.append(module)
 
         games = Adw.PreferencesGroup(title="Automatic game activation",
-                                     description="Run the module only while selected non-Steam shortcuts are active.")
+                                     description="Run the module only while selected Steam games or shortcuts are active.")
         self.games_row = Adw.ActionRow(title="HV Games")
         self.games_disable = Gtk.Button(icon_name="media-playback-stop-symbolic", valign=Gtk.Align.CENTER,
                                         tooltip_text="Disable automatic activation")
@@ -1440,7 +1471,8 @@ class App(Adw.Application):
         self.module_icon.set_from_icon_name(icon); self.orb.set_css_classes(["status-orb", style])
         self.system_row.set_subtitle(f"{os_name} • {self.state['kernel']}")
         source_names = {"bundled": "Bundled build", "download": "Downloaded prebuilt module", "manual": "Imported manual source"}
-        self.source_row.set_subtitle(source_names[self.state["source"]] + f"; games use {source_names[self.state['game_source']].lower()}")
+        available = ", ".join(source_names[source].lower() for source in ("bundled", "download", "manual") if source in self.state["artifacts"]) or "none"
+        self.source_row.set_subtitle(source_names[self.state["source"]] + f"; games use {source_names[self.state['game_source']].lower()}; available: {available}")
         disabled = self.state["umip"] == "disabled"
         configured = self.state["umip_arg"] == "present"
         self.umip_row.set_title("UMIP is disabled" if disabled else "UMIP is enabled")
@@ -1644,15 +1676,16 @@ class App(Adw.Application):
         self.toast("Reading Steam shortcuts…"); self.read("list_games", self.show_games)
 
     def show_games(self, code, output):
-        games = [line.split("\t", 2) for line in output.splitlines() if line.count("\t") >= 2]
+        games = [line.split("\t", 3) for line in output.splitlines() if line.count("\t") >= 3]
         if code or not games:
             dialog = Adw.AlertDialog(heading="No Steam shortcuts found",
                                      body=output.strip() or "Add a non-Steam shortcut in Steam, then try again.")
             dialog.add_response("close", "Close"); dialog.present(self.win); return
         listing = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
         checks = []
-        for appid, kind, name in sorted(games, key=lambda game: game[2].casefold()):
-            label = f"{name}  ({'Steam game' if kind == 'steam' else 'Non-Steam shortcut'})"
+        for appid, kind, running, name in sorted(games, key=lambda game: game[3].casefold()):
+            status = " • Running" if running == "running" else ""
+            label = f"{name}  ({'Steam game' if kind == 'steam' else 'Non-Steam shortcut'}{status})"
             check = Gtk.CheckButton(label=label, active=appid in self.state["configured"], margin_top=8,
                                     margin_bottom=8, margin_start=12, margin_end=12)
             check.set_tooltip_text(f"Steam AppID {appid}"); listing.append(check); checks.append((appid, check))
