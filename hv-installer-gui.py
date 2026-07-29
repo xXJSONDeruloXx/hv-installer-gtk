@@ -20,6 +20,7 @@ import tarfile
 import threading
 import time
 import traceback
+import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -34,6 +35,10 @@ CONFIG_FILE = STATE_DIR / "config.json"
 SOURCE_DIR = STATE_DIR / "source"
 INSTALLED_SOURCE = Path("/usr/local/share/hv-installer-gtk/cpuid_fault_emulation")
 MODULE_FILE = STATE_DIR / "cpuid_fault_emulation.ko"
+DOWNLOAD_DIR = STATE_DIR / "downloaded"
+DOWNLOADED_MODULE_FILE = DOWNLOAD_DIR / "cpuid_fault_emulation.ko"
+DEFAULT_RELEASE_API_URL = "https://api.github.com/repos/PareidoliaDev/glowing-tribble/releases/latest"
+ALTERNATIVE_RELEASE_API_URL = "https://api.github.com/repos/2804u13j200-spec/glowing-tribble/releases/latest"
 SERVICE_APP = Path("/usr/local/libexec/hv-installer")
 SERVICE_PYTHON = Path("/usr/bin/python3")
 KVM_STATE = Path("/run/hv-installer-kvm-modules")
@@ -228,6 +233,44 @@ def cpuid_probe():
 
 class BackendError(RuntimeError):
     pass
+
+
+def github_release_api_url(value):
+    value = value.strip()
+    if not value: raise BackendError("Enter a GitHub repository URL")
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\\.git)?", value): value = "https://github.com/" + value
+    elif not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", value): value = "https://" + value
+    parsed = urllib.parse.urlparse(value)
+    parts = [urllib.parse.unquote(part) for part in parsed.path.split("/") if part]
+    if parsed.query or parsed.fragment: raise BackendError("Repository URL must not contain a query or fragment")
+    if parsed.hostname in {"github.com", "www.github.com"} and len(parts) == 2:
+        owner, repository = parts
+    elif parsed.hostname == "api.github.com" and len(parts) in {3, 5} and parts[:1] == ["repos"] and (len(parts) == 3 or parts[3:] == ["releases", "latest"]):
+        owner, repository = parts[1:3]
+    else: raise BackendError("Repository must be hosted on github.com")
+    repository = repository.removesuffix(".git")
+    component = re.compile(r"[A-Za-z0-9_.-]+")
+    if not component.fullmatch(owner) or not component.fullmatch(repository): raise BackendError("Repository owner or name is invalid")
+    return f"https://api.github.com/repos/{owner}/{repository}/releases/latest"
+
+
+def selected_release_api_url(config):
+    config = normalize_config(config)
+    if config["module_repository"] == "alternative": return ALTERNATIVE_RELEASE_API_URL
+    if config["module_repository"] == "custom": return github_release_api_url(config["custom_module_repository"])
+    return DEFAULT_RELEASE_API_URL
+
+
+def release_asset_url(release, kernel):
+    expected = f"cpuid_fault_emulation-{kernel}.ko"
+    assets = release.get("assets") if isinstance(release, dict) else None
+    if isinstance(assets, list):
+        for asset in assets:
+            if not isinstance(asset, dict) or asset.get("name") != expected: continue
+            url = asset.get("browser_download_url")
+            parsed = urllib.parse.urlparse(url) if isinstance(url, str) else None
+            if parsed and parsed.scheme == "https" and parsed.netloc: return url
+    raise BackendError(f"No compatible prebuilt module named {expected} was found")
 
 
 def quiet(args):

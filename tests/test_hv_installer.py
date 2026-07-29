@@ -113,6 +113,49 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(gui.load_config(path), expected)
             self.assertFalse(path.with_suffix(".tmp").exists())
 
+    def test_release_repository_urls_are_normalized_and_validated(self):
+        self.assertEqual(
+            gui.github_release_api_url("owner/repository"),
+            "https://api.github.com/repos/owner/repository/releases/latest",
+        )
+        self.assertEqual(
+            gui.github_release_api_url("https://github.com/owner/repository.git"),
+            "https://api.github.com/repos/owner/repository/releases/latest",
+        )
+        with self.assertRaises(gui.BackendError):
+            gui.github_release_api_url("https://example.com/owner/repository")
+        with self.assertRaises(gui.BackendError):
+            gui.github_release_api_url("owner/repository?unsafe=true")
+
+    def test_release_asset_selection_requires_an_exact_https_kernel_asset(self):
+        release = {
+            "assets": [
+                {"name": "cpuid_fault_emulation-6.9.0.ko", "browser_download_url": "http://invalid/module.ko"},
+                {"name": "cpuid_fault_emulation-6.9.0-debug.ko", "browser_download_url": "https://example.test/debug.ko"},
+                {"name": "cpuid_fault_emulation-6.9.0.ko", "browser_download_url": "https://example.test/module.ko"},
+            ]
+        }
+        self.assertEqual(
+            gui.release_asset_url(release, "6.9.0"),
+            "https://example.test/module.ko",
+        )
+        with self.assertRaises(gui.BackendError):
+            gui.release_asset_url({"assets": []}, "6.9.0")
+
+    def test_selected_release_repository_obeys_the_saved_choice(self):
+        self.assertEqual(gui.selected_release_api_url(gui.default_config()), gui.DEFAULT_RELEASE_API_URL)
+        self.assertEqual(
+            gui.selected_release_api_url({"module_repository": "alternative"}),
+            gui.ALTERNATIVE_RELEASE_API_URL,
+        )
+        self.assertEqual(
+            gui.selected_release_api_url({
+                "module_repository": "custom",
+                "custom_module_repository": "owner/repository",
+            }),
+            "https://api.github.com/repos/owner/repository/releases/latest",
+        )
+
     def test_shortcut_appid_supports_full_and_high_word_ids(self):
         self.assertEqual(gui.shortcut_appid(str(42 << 32), "missing", {"42"}), "42")
         self.assertEqual(gui.shortcut_appid("42", "missing", {"42"}), "42")
