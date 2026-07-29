@@ -216,9 +216,20 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(saved["setup_method"], "download")
         self.assertEqual(saved["game_module_source"], "download")
 
+    def test_steam_library_discovery_includes_installed_apps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            steamapps = home / ".local/share/Steam/steamapps"
+            steamapps.mkdir(parents=True)
+            (steamapps / "appmanifest_42.acf").write_text(
+                '"AppState"\n{\n  "appid" "42"\n  "name" "Example Game"\n}\n'
+            )
+            self.assertEqual(gui.steam_library_games(home), {"42": "Example Game"})
+
     def test_shortcut_appid_supports_full_and_high_word_ids(self):
         self.assertEqual(gui.shortcut_appid(str(42 << 32), "missing", {"42"}), "42")
         self.assertEqual(gui.shortcut_appid("42", "missing", {"42"}), "42")
+        self.assertEqual(gui.shortcut_appid("42", "missing", {"42"}, require_environment=True), "42")
         self.assertIsNone(gui.shortcut_appid(str(42 << 32), "missing", {"42"}, require_environment=True))
 
     def test_real_backend_inspection_is_machine_readable(self):

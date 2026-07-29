@@ -696,6 +696,33 @@ def change_umip(present, entry_value=None):
 def steam_home(): return Path(pwd.getpwnam(desktop_user()).pw_dir)
 
 
+def steam_library_paths(home):
+    libraries = []
+    seen = set()
+    def add(path):
+        steamapps = path if path.name == "steamapps" else path / "steamapps"
+        if steamapps.is_dir() and steamapps not in seen: seen.add(steamapps); libraries.append(steamapps)
+    for root in (home / ".local/share/Steam", home / ".steam/steam"):
+        add(root)
+        try: text = (root / "steamapps/libraryfolders.vdf").read_text(errors="replace")
+        except OSError: continue
+        for value in re.findall(r'"path"\s+"((?:\\\\.|[^"\\\\])*)"', text, re.I):
+            add(Path(re.sub(r"\\\\([\\\\\"])", r"\\1", value)))
+    return libraries
+
+
+def steam_library_games(home=None):
+    games = {}
+    for steamapps in steam_library_paths(home or steam_home()):
+        for manifest in steamapps.glob("appmanifest_*.acf"):
+            try: text = manifest.read_text(errors="replace")
+            except OSError: continue
+            appid = re.search(r'"appid"\s+"([0-9]+)"', text, re.I)
+            name = re.search(r'"name"\s+"((?:\\\\.|[^"\\\\])*)"', text, re.I)
+            if appid and name: games[appid.group(1)] = re.sub(r"\\\\([\\\\\"])", r"\\1", name.group(1))
+    return games
+
+
 def vdf_string(data, position):
     end = data.find(b"\0", position)
     if end < 0: raise ValueError("Unterminated VDF string")
@@ -732,8 +759,8 @@ def shortcut_games():
 
 
 def list_games_backend():
-    games = shortcut_games()
-    if not games: raise BackendError(f"No Steam shortcuts were found for {desktop_user()}")
+    games = steam_library_games(); games.update(shortcut_games())
+    if not games: raise BackendError(f"No Steam games or shortcuts were found for {desktop_user()}")
     for appid, name in games.items(): print(f"{appid}\t{name}")
 
 
@@ -773,7 +800,8 @@ def shortcut_appid(game_id, pid, configured, require_environment=False):
                 found = int(value); environment_ids += [str((found >> 32) & 0xffffffff), str(found)]
     except OSError:
         pass
-    candidates = environment_ids if require_environment else logged + environment_ids
+    candidates = ([str(numeric)] + environment_ids if require_environment and numeric <= 0xffffffff else
+                  environment_ids if require_environment else logged + environment_ids)
     return next((value for value in candidates if value in configured), None)
 
 
