@@ -25,6 +25,7 @@ def main():
     with zipfile.ZipFile(OUTPUT, "w", compresslevel=9) as archive:
         add(archive, ROOT / "hv-installer-gui.py", "HV Installer GTK", 0o100755)
         add(archive, ROOT / "data/hvinstaller.desktop", "hvinstaller.desktop", 0o100644)
+        add(archive, ROOT / "data/dev.pareidolia.hvinstaller.svg", "dev.pareidolia.hvinstaller.svg", 0o100644)
         add(archive, ROOT / "LICENSE", "LICENSE", 0o100644)
         add(archive, ROOT / "README.md", "README.md", 0o100644)
         instructions = ("HV Installer GTK\n\n"

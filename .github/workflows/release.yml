@@ -26,5 +26,7 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             dist/*.zip \
             dist/*.zip.sha256 \
+            dist/*.AppImage \
+            dist/*.AppImage.sha256 \
             --generate-notes \
             --title "HV Installer GTK ${GITHUB_REF_NAME}"

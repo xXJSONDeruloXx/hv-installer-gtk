@@ -26,10 +26,18 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
-import gi
-gi.require_version("Adw", "1")
-gi.require_version("Gtk", "4.0")
-from gi.repository import Adw, Gdk, GLib, Gtk
+GUI_MODE = not any(option in sys.argv[1:] for option in ("--backend", "--daemon", "--watch", "--cpuid-probe"))
+if GUI_MODE:
+    import gi
+    gi.require_version("Adw", "1")
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Adw, Gdk, GLib, Gtk
+else:
+    class _BackendAdw:
+        Window = object
+        Application = object
+    Adw = _BackendAdw()
+    Gdk = GLib = Gtk = None
 
 APP = Path(__file__).resolve()
 STATE_DIR = Path("/var/lib/hv-installer")
@@ -75,6 +83,14 @@ def desktop_source():
     raise BackendError("Desktop entry is missing from the release")
 
 
+def icon_source():
+    for path in (APP.parent / "dev.pareidolia.hvinstaller.svg",
+                 APP.parent / "data/dev.pareidolia.hvinstaller.svg",
+                 Path("/usr/local/share/icons/hicolor/scalable/apps/dev.pareidolia.hvinstaller.svg")):
+        if path.is_file(): return path
+    raise BackendError("Application icon is missing from the release")
+
+
 def tree_digest(root):
     digest = hashlib.sha256()
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
@@ -105,6 +121,7 @@ def sealed_bundle():
     with tarfile.open(fileobj=buffer, mode="w") as archive:
         archive.add(APP, arcname="hv-installer", recursive=False)
         archive.add(desktop_source(), arcname="hvinstaller.desktop", recursive=False)
+        archive.add(icon_source(), arcname="hv-installer.svg", recursive=False)
         source = bundled_source()
         for path in sorted(item for item in source.rglob("*") if item.is_file()):
             archive.add(path, arcname=f"source/{path.relative_to(source)}", recursive=False)
@@ -132,6 +149,7 @@ tar -xf "$bundle" -C "$tmp"
 install -Dm755 "$tmp/hv-installer" /usr/local/libexec/hv-installer
 install -Dm755 "$tmp/hv-installer" /usr/local/bin/hv-installer-gtk
 install -Dm644 "$tmp/hvinstaller.desktop" /usr/local/share/applications/hvinstaller.desktop
+install -Dm644 "$tmp/hv-installer.svg" /usr/local/share/icons/hicolor/scalable/apps/dev.pareidolia.hvinstaller.svg
 rm -rf /usr/local/share/hv-installer-gtk/cpuid_fault_emulation
 mkdir -p /usr/local/share/hv-installer-gtk
 cp -R "$tmp/source" /usr/local/share/hv-installer-gtk/cpuid_fault_emulation

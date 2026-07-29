@@ -18,12 +18,26 @@ GTK 4 application for installing and managing CPUID Fault Emulation on x86-64 Li
 
 ## Install
 
+### AppImage (recommended on x86-64)
+
+1. Download `HV-Installer-GTK-*-x86_64.AppImage` and its matching `.sha256` from the [latest release](https://github.com/xXJSONDeruloXx/hv-installer-gtk/releases/latest).
+2. In the download directory, run `sha256sum -c HV-Installer-GTK-*-x86_64.AppImage.sha256`.
+3. Mark it executable and launch it: `chmod +x HV-Installer-GTK-*-x86_64.AppImage && ./HV-Installer-GTK-*-x86_64.AppImage`.
+
+The AppImage bundles Python, GTK 4, libadwaita, the module source, and the opt-in
+helper source/binary. The first privileged action installs a verified, root-owned native
+backend under `/usr/local`; the AppImage itself never becomes the privileged backend.
+It requires an x86-64 host with a current glibc-based desktop, `pkexec`, and the existing
+host build tooling (DKMS or Podman) required for your selected module path.
+
+### ZIP
+
 1. Download the ZIP and matching `.sha256` from the [latest release](https://github.com/xXJSONDeruloXx/hv-installer-gtk/releases/latest).
 2. Verify it, for example with `sha256sum -c hv-installer-gtk-*.zip.sha256` in the download directory.
 3. Extract the ZIP.
 4. Right-click **HV Installer GTK** and choose **Run as program**.
 
-The application requests administrator access once at launch and uses a verified,
+Both formats request administrator access once at launch and use a verified,
 root-owned backend for privileged operations. Manual Makefiles and custom release
 repositories are user-trusted inputs; review them before use.
 
@@ -73,10 +87,13 @@ Build the complete release, including the pinned helper binary and corresponding
 ```bash
 make release
 (cd dist && sha256sum -c hv-installer-gtk-*.zip.sha256)
+(cd dist && sha256sum -c HV-Installer-GTK-*-x86_64.AppImage.sha256)
 ```
 
 The helper build requires Git, Cargo/Rust, Clang, and the native build dependencies used
-by vendored `libbpf`. CI installs these dependencies explicitly.
+by vendored `libbpf`. `make appimage` additionally requires Docker and builds the x86-64
+AppImage in the pinned Ubuntu container with checksummed linuxdeploy, appimagetool, and
+AppImage runtime inputs. CI builds and verifies both release formats.
 
 ## License
 

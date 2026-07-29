@@ -43,6 +43,7 @@ class InstallerTests(unittest.TestCase):
                 names = set(archive.getnames())
             self.assertIn("hv-installer", names)
             self.assertIn("hvinstaller.desktop", names)
+            self.assertIn("hv-installer.svg", names)
             self.assertIn("source/src/cpuid_fault_emulation.c", names)
             args = gui.bootstrap_daemon_command("deck", f"/proc/self/fd/{fd}",
                                                 "/run/user/1000/hv-installer.sock", 1000, 1000)

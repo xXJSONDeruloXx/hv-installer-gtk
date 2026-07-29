@@ -30,3 +30,17 @@ jobs:
           test -x build/release-assets/umipcompatd/umipcompatd
           test -s build/release-assets/umipcompatd/umipcompatd-source.tar.gz
           test -s build/release-assets/umipcompatd/LICENSE
+      - name: Build AppImage in pinned container
+        run: python3 packaging/build-appimage.py
+      - name: Verify AppImage artifact
+        run: |
+          app=dist/HV-Installer-GTK-*-x86_64.AppImage
+          test -x "$app"
+          (cd dist && sha256sum --check HV-Installer-GTK-*-x86_64.AppImage.sha256)
+          APPIMAGE_EXTRACT_AND_RUN=1 "$app" --backend logs >/dev/null
+          work=$(mktemp -d)
+          (cd "$work" && "$GITHUB_WORKSPACE/$app" --appimage-extract >/dev/null && \
+            test -x squashfs-root/usr/bin/python3 && \
+            test -f squashfs-root/usr/lib/hv-installer-gtk/cpuid_fault_emulation/Makefile && \
+            test -s squashfs-root/usr/lib/hv-installer-gtk/umipcompatd/umipcompatd-source.tar.gz)
+          rm -rf "$work"
