@@ -45,7 +45,7 @@ SERVICE_PYTHON = Path("/usr/bin/python3")
 KVM_STATE = Path("/run/hv-installer-kvm-modules")
 ACTIONS = {
     "inspect": False, "install": True, "start": True, "stop": True,
-    "update": True, "uninstall": True, "disable_umip": True,
+    "update": True, "uninstall": True, "download": True, "disable_umip": True,
     "enable_umip": True, "bootloader": False, "disable_umip_entry": True,
     "enable_umip_entry": True, "list_games": False, "configure_games": True,
     "disable_games": True, "cpuid_test": False, "reboot": True,
@@ -186,6 +186,7 @@ def parse_status(output):
         "umip_arg": values.get("umip_arg", "unknown") if values.get("umip_arg") in {"present", "absent"} else "unknown",
         "installed": values.get("installed") == "1", "loaded": values.get("loaded") == "1",
         "matching": values.get("matching", "1") == "1",
+        "source": values.get("source") if values.get("source") in {"bundled", "download", "manual"} else "bundled",
         "watcher": values.get("watcher", "disabled") if values.get("watcher") in {"disabled", "enabled", "running"} else "disabled",
         "configured": {item for item in values.get("configured", "").split(",") if item},
     }
@@ -356,14 +357,22 @@ def kernel_module_loaded(name):
 def module_loaded(): return kernel_module_loaded("cpuid_fault_emulation")
 
 
+def selected_module_file(config=None):
+    config = load_config() if config is None else normalize_config(config)
+    return DOWNLOADED_MODULE_FILE if config["setup_method"] == "download" else None
+
+
 def module_installed():
+    selected = selected_module_file()
+    if selected is not None: return selected.is_file()
     return MODULE_FILE.is_file() if local_module() else bool(shutil.which("modinfo") and quiet(["modinfo", "cpuid_fault_emulation"]).returncode == 0)
 
 
 def module_matches():
+    selected = selected_module_file()
+    if selected is not None: return selected.is_file() and module_file_matches(selected, os.uname().release)
     if not local_module() or not MODULE_FILE.is_file(): return True
-    result = quiet(["modinfo", "-F", "vermagic", str(MODULE_FILE)]) if shutil.which("modinfo") else None
-    return bool(result and result.returncode == 0 and result.stdout.split(" ", 1)[0].strip() == os.uname().release)
+    return module_file_matches(MODULE_FILE, os.uname().release)
 
 
 def configured_appids():
@@ -400,7 +409,7 @@ def inspect_backend():
         "umip": "enabled" if re.search(r"\bumip\b", cpu) else "disabled",
         "umip_arg": "present" if clearcpuid_configured() else "absent",
         "installed": int(module_installed()), "loaded": int(module_loaded()),
-        "matching": int(module_matches()), "watcher": watcher_state(),
+        "matching": int(module_matches()), "source": load_config()["setup_method"], "watcher": watcher_state(),
         "configured": ",".join(sorted(configured_appids(), key=int)),
     }
     for key, value in values.items(): print(f"{key}={value}")
@@ -508,13 +517,23 @@ def install_dkms():
     print("Module installed successfully.")
 
 
+def download_backend():
+    config = load_config()
+    download_prebuilt_module(config, os.uname().release)
+    config["setup_method"] = "download"; config["game_module_source"] = "download"
+    save_config(config)
+    print(f"Downloaded module for {os.uname().release}.")
+
+
 def install_backend():
-    if local_module(): build_container()
+    if load_config()["setup_method"] == "download": download_backend()
+    elif local_module(): build_container()
     else: install_dependencies(); install_dkms()
 
 
 def update_backend():
-    build_container() if local_module() else install_dkms()
+    if load_config()["setup_method"] == "download": download_backend()
+    else: build_container() if local_module() else install_dkms()
 
 
 @contextmanager
@@ -540,11 +559,12 @@ def _start_backend():
         for name in ("kvm_amd", "kvm"):
             if kernel_module_loaded(name): run(["modprobe", "-r", name]); removed.append(name)
         KVM_STATE.write_text("\n".join(removed) + "\n")
-        run(["insmod", str(MODULE_FILE)] if local_module() else ["modprobe", "cpuid_fault_emulation"])
+        selected = selected_module_file()
+        run(["insmod", str(selected)] if selected is not None else ["insmod", str(MODULE_FILE)] if local_module() else ["modprobe", "cpuid_fault_emulation"])
         if not module_loaded(): raise BackendError("The module failed to start")
     except Exception:
         if module_loaded():
-            try: run(["rmmod", "cpuid_fault_emulation"] if local_module() else ["modprobe", "-r", "cpuid_fault_emulation"])
+            try: run(["rmmod", "cpuid_fault_emulation"] if selected_module_file() is not None or local_module() else ["modprobe", "-r", "cpuid_fault_emulation"])
             except Exception: raise BackendError("Startup failed and the module could not be rolled back")
         restore_kvm(removed); KVM_STATE.unlink(missing_ok=True); raise
     print("Module started successfully.")
@@ -553,7 +573,7 @@ def _start_backend():
 
 def _stop_backend():
     was_loaded = module_loaded()
-    if was_loaded: run(["rmmod", "cpuid_fault_emulation"] if local_module() else ["modprobe", "-r", "cpuid_fault_emulation"])
+    if was_loaded: run(["rmmod", "cpuid_fault_emulation"] if selected_module_file() is not None or local_module() else ["modprobe", "-r", "cpuid_fault_emulation"])
     if KVM_STATE.is_file(): modules = KVM_STATE.read_text().split()
     elif was_loaded: modules = ["kvm_amd", "kvm"]
     else: print("The module is already stopped."); return
@@ -581,6 +601,12 @@ def uninstall_backend():
     if watcher_state() != "disabled": disable_games_backend()
     with module_lock():
         if module_loaded() or KVM_STATE.is_file(): _stop_backend()
+        selected = selected_module_file()
+        if selected is not None:
+            if selected.exists(): selected.unlink(); print(f"Removed {selected}.")
+            else: print("No downloaded module was found.")
+            config = load_config(); config["setup_method"] = "bundled"; config["game_module_source"] = "bundled"; save_config(config)
+            return
         if local_module():
             if MODULE_FILE.exists(): MODULE_FILE.unlink(); print(f"Removed {MODULE_FILE}.")
             else: print("No compiled module was found.")
@@ -802,7 +828,7 @@ def backend(action, values):
     if ACTIONS[action] and APP != SERVICE_APP: raise BackendError("Privileged actions require the verified installed backend")
     dispatch = {
         "inspect": inspect_backend, "install": install_backend, "start": start_backend,
-        "stop": stop_backend, "update": update_backend, "uninstall": uninstall_backend,
+        "stop": stop_backend, "update": update_backend, "uninstall": uninstall_backend, "download": download_backend,
         "bootloader": lambda: print(bootloader()), "list_games": list_games_backend,
         "configure_games": lambda: configure_games_backend(values), "disable_games": disable_games_backend,
         "disable_umip": lambda: change_umip(True), "enable_umip": lambda: change_umip(False),
@@ -850,7 +876,7 @@ USER = os.environ.get("SUDO_USER") or getpass.getuser()
 NAMES = {"bazzite": "Bazzite", "steamos": "SteamOS", "linux": "Linux"}
 TITLES = {
     "install": "Installing the kernel module", "start": "Starting the module",
-    "stop": "Stopping the module", "update": "Updating the module",
+    "stop": "Stopping the module", "update": "Updating the module", "download": "Downloading the module",
     "uninstall": "Removing the module", "disable_umip": "Updating boot options",
     "disable_umip_entry": "Updating boot options", "enable_umip": "Restoring boot options",
     "enable_umip_entry": "Restoring boot options", "configure_games": "Applying game selection",

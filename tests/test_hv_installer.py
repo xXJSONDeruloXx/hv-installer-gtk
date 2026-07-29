@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 APP = Path(__file__).resolve().parents[1] / "hv-installer-gui.py"
 spec = importlib.util.spec_from_file_location("hv_installer_gui", APP)
@@ -17,7 +18,7 @@ spec.loader.exec_module(gui)
 class InstallerTests(unittest.TestCase):
     def test_every_capability_is_exposed(self):
         self.assertEqual(set(gui.ACTIONS), {
-            "inspect", "install", "start", "stop", "update", "uninstall",
+            "inspect", "install", "start", "stop", "update", "uninstall", "download",
             "disable_umip", "enable_umip", "bootloader", "disable_umip_entry",
             "enable_umip_entry", "list_games", "configure_games", "disable_games",
             "cpuid_test", "reboot",
@@ -196,6 +197,24 @@ class InstallerTests(unittest.TestCase):
                 )
             self.assertFalse(destination.exists())
             self.assertFalse(destination.with_suffix(".tmp").exists())
+
+    def test_downloaded_module_is_the_selected_explicit_module(self):
+        self.assertEqual(
+            gui.selected_module_file({"setup_method": "download"}),
+            gui.DOWNLOADED_MODULE_FILE,
+        )
+        self.assertIsNone(gui.selected_module_file({"setup_method": "bundled"}))
+
+    def test_download_action_selects_the_validated_prebuilt_module(self):
+        config = gui.default_config()
+        with patch.object(gui, "load_config", return_value=config), \
+             patch.object(gui, "download_prebuilt_module") as download, \
+             patch.object(gui, "save_config") as save:
+            gui.download_backend()
+        download.assert_called_once()
+        saved = save.call_args.args[0]
+        self.assertEqual(saved["setup_method"], "download")
+        self.assertEqual(saved["game_module_source"], "download")
 
     def test_shortcut_appid_supports_full_and_high_word_ids(self):
         self.assertEqual(gui.shortcut_appid(str(42 << 32), "missing", {"42"}), "42")
