@@ -6,6 +6,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -215,6 +216,25 @@ class InstallerTests(unittest.TestCase):
         saved = save.call_args.args[0]
         self.assertEqual(saved["setup_method"], "download")
         self.assertEqual(saved["game_module_source"], "download")
+
+    def test_manual_source_zip_is_staged_without_preserving_its_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "source.zip"
+            destination = Path(directory) / "staged"
+            with zipfile.ZipFile(archive, "w") as contents:
+                contents.writestr("module/Makefile", "all:\n\ttrue\n")
+                contents.writestr("module/source.c", "int main(void) {}\n")
+            self.assertEqual(gui.stage_manual_source(archive, destination), destination)
+            self.assertTrue((destination / "Makefile").is_file())
+            self.assertFalse((destination / "module").exists())
+
+    def test_manual_source_zip_rejects_unsafe_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "unsafe.zip"
+            with zipfile.ZipFile(archive, "w") as contents:
+                contents.writestr("../outside", "unsafe")
+            with self.assertRaises(gui.BackendError):
+                gui.stage_manual_source(archive, Path(directory) / "staged")
 
     def test_operation_log_is_bounded_and_readable(self):
         with tempfile.TemporaryDirectory() as directory:

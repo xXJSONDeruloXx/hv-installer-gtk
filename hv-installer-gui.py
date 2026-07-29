@@ -22,6 +22,7 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -269,6 +270,29 @@ def github_release_api_url(value):
     component = re.compile(r"[A-Za-z0-9_.-]+")
     if not component.fullmatch(owner) or not component.fullmatch(repository): raise BackendError("Repository owner or name is invalid")
     return f"https://api.github.com/repos/{owner}/{repository}/releases/latest"
+
+
+def stage_manual_source(archive, destination):
+    if not archive.is_file() or archive.suffix.lower() != ".zip": raise BackendError("Manual source must be a ZIP file")
+    extracting = destination.with_name(f".{destination.name}.extracting")
+    copying = destination.with_name(f".{destination.name}.copying")
+    shutil.rmtree(extracting, ignore_errors=True); shutil.rmtree(copying, ignore_errors=True)
+    try:
+        with zipfile.ZipFile(archive) as contents:
+            for entry in contents.infolist():
+                path = Path(entry.filename)
+                if path.is_absolute() or ".." in path.parts or (entry.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise BackendError("Source ZIP contains an unsafe path or symbolic link")
+            contents.extractall(extracting)
+        candidates = [extracting, *(path for path in extracting.iterdir() if path.is_dir())]
+        source = next((path for path in candidates if (path / "Makefile").is_file()), None)
+        if source is None: raise BackendError("Source ZIP must contain a Makefile at its root or top level")
+        shutil.copytree(source, copying); shutil.rmtree(destination, ignore_errors=True); copying.replace(destination)
+    except (OSError, zipfile.BadZipFile) as error:
+        raise BackendError(f"Could not stage manual source: {error}") from error
+    finally:
+        shutil.rmtree(extracting, ignore_errors=True); shutil.rmtree(copying, ignore_errors=True)
+    return destination
 
 
 def selected_release_api_url(config):
