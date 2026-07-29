@@ -46,7 +46,7 @@ SERVICE_APP = Path("/usr/local/libexec/hv-installer")
 SERVICE_PYTHON = Path("/usr/bin/python3")
 KVM_STATE = Path("/run/hv-installer-kvm-modules")
 ACTIONS = {
-    "inspect": False, "logs": False, "install": True, "start": True, "stop": True,
+    "inspect": False, "logs": False, "install": True, "start": True, "stop": True, "import_source": True,
     "update": True, "uninstall": True, "download": True, "disable_umip": True,
     "enable_umip": True, "bootloader": False, "disable_umip_entry": True,
     "enable_umip_entry": True, "list_games": False, "configure_games": True,
@@ -273,20 +273,24 @@ def github_release_api_url(value):
 
 
 def stage_manual_source(archive, destination):
-    if not archive.is_file() or archive.suffix.lower() != ".zip": raise BackendError("Manual source must be a ZIP file")
     extracting = destination.with_name(f".{destination.name}.extracting")
     copying = destination.with_name(f".{destination.name}.copying")
     shutil.rmtree(extracting, ignore_errors=True); shutil.rmtree(copying, ignore_errors=True)
     try:
-        with zipfile.ZipFile(archive) as contents:
-            for entry in contents.infolist():
-                path = Path(entry.filename)
-                if path.is_absolute() or ".." in path.parts or (entry.external_attr >> 16) & 0o170000 == 0o120000:
-                    raise BackendError("Source ZIP contains an unsafe path or symbolic link")
-            contents.extractall(extracting)
-        candidates = [extracting, *(path for path in extracting.iterdir() if path.is_dir())]
-        source = next((path for path in candidates if (path / "Makefile").is_file()), None)
-        if source is None: raise BackendError("Source ZIP must contain a Makefile at its root or top level")
+        if archive.is_dir():
+            if not (archive / "Makefile").is_file(): raise BackendError("Manual source directory must contain a Makefile")
+            source = archive
+        elif archive.is_file() and archive.suffix.lower() == ".zip":
+            with zipfile.ZipFile(archive) as contents:
+                for entry in contents.infolist():
+                    path = Path(entry.filename)
+                    if path.is_absolute() or ".." in path.parts or (entry.external_attr >> 16) & 0o170000 == 0o120000:
+                        raise BackendError("Source ZIP contains an unsafe path or symbolic link")
+                contents.extractall(extracting)
+            candidates = [extracting, *(path for path in extracting.iterdir() if path.is_dir())]
+            source = next((path for path in candidates if (path / "Makefile").is_file()), None)
+            if source is None: raise BackendError("Source ZIP must contain a Makefile at its root or top level")
+        else: raise BackendError("Manual source must be a folder or ZIP file")
         shutil.copytree(source, copying); shutil.rmtree(destination, ignore_errors=True); copying.replace(destination)
     except (OSError, zipfile.BadZipFile) as error:
         raise BackendError(f"Could not stage manual source: {error}") from error
@@ -461,8 +465,16 @@ def bundled_source():
     raise BackendError("The installed kernel module source is missing")
 
 
+def build_source(config=None):
+    config = load_config() if config is None else normalize_config(config)
+    if config["setup_method"] != "manual": return bundled_source()
+    source = Path(config["manual_source"])
+    if not (source / "Makefile").is_file(): raise BackendError("The staged manual source is missing a Makefile")
+    return source
+
+
 def copy_source(destination, owner=None):
-    source = bundled_source()
+    source = build_source()
     temporary = destination.with_name(f".{destination.name}.copying")
     shutil.rmtree(temporary, ignore_errors=True); shutil.copytree(source, temporary)
     if owner:
@@ -555,6 +567,13 @@ def install_dkms():
     finally:
         shutil.rmtree(backup, ignore_errors=True)
     print("Module installed successfully.")
+
+
+def import_source_backend(values):
+    if len(values) != 1: raise BackendError("Choose one manual source folder or ZIP file")
+    staged = stage_manual_source(Path(values[0]), STATE_DIR / "manual-source")
+    config = load_config(); config["setup_method"] = "manual"; config["game_module_source"] = "manual"; config["manual_source"] = str(staged)
+    save_config(config); print(f"Staged manual source at {staged}.")
 
 
 def download_backend():
@@ -895,7 +914,7 @@ def backend(action, values):
     if ACTIONS[action] and os.geteuid() != 0: raise BackendError("Administrator privileges are required")
     if ACTIONS[action] and APP != SERVICE_APP: raise BackendError("Privileged actions require the verified installed backend")
     dispatch = {
-        "inspect": inspect_backend, "logs": lambda: print(read_operation_log()), "install": install_backend, "start": start_backend,
+        "inspect": inspect_backend, "logs": lambda: print(read_operation_log()), "import_source": lambda: import_source_backend(values), "install": install_backend, "start": start_backend,
         "stop": stop_backend, "update": update_backend, "uninstall": uninstall_backend, "download": download_backend,
         "bootloader": lambda: print(bootloader()), "list_games": list_games_backend,
         "configure_games": lambda: configure_games_backend(values), "disable_games": disable_games_backend,

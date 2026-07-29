@@ -19,7 +19,7 @@ spec.loader.exec_module(gui)
 class InstallerTests(unittest.TestCase):
     def test_every_capability_is_exposed(self):
         self.assertEqual(set(gui.ACTIONS), {
-            "inspect", "logs", "install", "start", "stop", "update", "uninstall", "download",
+            "inspect", "logs", "install", "start", "stop", "update", "uninstall", "download", "import_source",
             "disable_umip", "enable_umip", "bootloader", "disable_umip_entry",
             "enable_umip_entry", "list_games", "configure_games", "disable_games",
             "cpuid_test", "reboot",
@@ -216,6 +216,18 @@ class InstallerTests(unittest.TestCase):
         saved = save.call_args.args[0]
         self.assertEqual(saved["setup_method"], "download")
         self.assertEqual(saved["game_module_source"], "download")
+
+    def test_manual_source_directory_is_copied_and_selected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            destination = Path(directory) / "staged"
+            source.mkdir(); (source / "Makefile").write_text("all:\n\ttrue\n")
+            self.assertEqual(gui.stage_manual_source(source, destination), destination)
+            self.assertTrue((destination / "Makefile").is_file())
+            self.assertEqual(
+                gui.build_source({"setup_method": "manual", "manual_source": str(destination)}),
+                destination,
+            )
 
     def test_manual_source_zip_is_staged_without_preserving_its_wrapper(self):
         with tempfile.TemporaryDirectory() as directory:
