@@ -17,6 +17,7 @@ import struct
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import traceback
@@ -220,12 +221,21 @@ def save_config(value, path=CONFIG_FILE):
 
 
 def append_operation_log(content, path=SESSION_LOG, limit=128 * 1024):
-    try: existing = path.read_bytes()
-    except OSError: existing = b""
     path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_bytes((existing + content.encode(errors="replace"))[-limit:])
-    temporary.chmod(0o644); temporary.replace(path)
+    lock_path = path.with_name(path.name + ".lock")
+    with lock_path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try: existing = path.read_bytes()
+        except OSError: existing = b""
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", suffix=".tmp", delete=False) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write((existing + content.encode(errors="replace"))[-limit:])
+                temporary.flush(); os.fsync(temporary.fileno()); os.fchmod(temporary.fileno(), 0o644)
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path is not None: temporary_path.unlink(missing_ok=True)
 
 
 def read_operation_log(path=SESSION_LOG):

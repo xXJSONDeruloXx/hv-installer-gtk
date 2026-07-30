@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tarfile
+import threading
 import tempfile
 import unittest
 import zipfile
@@ -343,6 +344,20 @@ class InstallerTests(unittest.TestCase):
             path.write_text("secret-free diagnostic\n")
             gui.clear_operation_log(path)
             self.assertEqual(gui.read_operation_log(path), "No operation logs are available yet.")
+
+    def test_operation_log_serializes_concurrent_writers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "operations.log"; start = threading.Barrier(12); errors = []
+            def writer(number):
+                try:
+                    start.wait(); gui.append_operation_log(f"entry-{number}\n", path)
+                except Exception as error: errors.append(error)
+            threads = [threading.Thread(target=writer, args=(number,)) for number in range(12)]
+            for thread in threads: thread.start()
+            for thread in threads: thread.join()
+            self.assertEqual(errors, [])
+            text = gui.read_operation_log(path)
+            for number in range(12): self.assertIn(f"entry-{number}", text)
 
     def test_operation_log_is_bounded_and_readable(self):
         with tempfile.TemporaryDirectory() as directory:
