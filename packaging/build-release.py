@@ -25,6 +25,9 @@ def main():
     with zipfile.ZipFile(OUTPUT, "w", compresslevel=9) as archive:
         add(archive, ROOT / "hv-installer-gui.py", "HV Installer GTK", 0o100755)
         add(archive, ROOT / "data/hvinstaller.desktop", "hvinstaller.desktop", 0o100644)
+        add(archive, ROOT / "data/dev.pareidolia.hvinstaller.svg", "dev.pareidolia.hvinstaller.svg", 0o100644)
+        add(archive, ROOT / "LICENSE", "LICENSE", 0o100644)
+        add(archive, ROOT / "README.md", "README.md", 0o100644)
         instructions = ("HV Installer GTK\n\n"
                         "1. Double-click 'HV Installer GTK'.\n"
                         "2. Choose Run if your file manager asks.\n"
@@ -34,6 +37,13 @@ def main():
         source = ROOT / "cpuid_fault_emulation"
         for path in sorted(item for item in source.rglob("*") if item.is_file()):
             add(archive, path, f"cpuid_fault_emulation/{path.relative_to(source)}", 0o100644)
+        helper = ROOT / "build/release-assets/umipcompatd"
+        required = {"umipcompatd", "umipcompatd-source.tar.gz", "umipcompatd.service", "LICENSE", "SOURCE"}
+        if not helper.is_dir() or not required.issubset(path.name for path in helper.iterdir()):
+            raise SystemExit("Run packaging/build-umipcompatd.py before building the release")
+        for path in sorted(item for item in helper.iterdir() if item.is_file()):
+            mode = 0o100755 if path.name == "umipcompatd" else 0o100644
+            add(archive, path, f"umipcompatd/{path.name}", mode)
     digest = hashlib.sha256(OUTPUT.read_bytes()).hexdigest()
     OUTPUT.with_suffix(".zip.sha256").write_text(f"{digest}  {OUTPUT.name}\n")
     print(OUTPUT)

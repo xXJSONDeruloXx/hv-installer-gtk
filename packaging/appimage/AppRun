@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+APPDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+MULTIARCH=x86_64-linux-gnu
+export PYTHONHOME="$APPDIR/usr"
+export PYTHONPATH="$APPDIR/usr/lib/python3/dist-packages"
+export LD_LIBRARY_PATH="$APPDIR/usr/lib/$MULTIARCH:$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}"
+export GI_TYPELIB_PATH="$APPDIR/usr/lib/$MULTIARCH/girepository-1.0"
+export GSETTINGS_SCHEMA_DIR="$APPDIR/usr/share/glib-2.0/schemas"
+export XDG_DATA_DIRS="$APPDIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export GDK_PIXBUF_MODULEDIR="$APPDIR/usr/lib/$MULTIARCH/gdk-pixbuf-2.0/2.10.0/loaders"
+cache="${XDG_RUNTIME_DIR:-/tmp}/hv-installer-gdk-pixbuf-${UID:-$(id -u)}.cache"
+query="$APPDIR/usr/lib/$MULTIARCH/gdk-pixbuf-2.0/gdk-pixbuf-query-loaders"
+if [ -x "$query" ] && [ ! -s "$cache" ]; then
+    "$query" "$GDK_PIXBUF_MODULEDIR"/*.so >"$cache"
+fi
+export GDK_PIXBUF_MODULE_FILE="$cache"
+exec "$APPDIR/usr/bin/python3" "$APPDIR/usr/lib/hv-installer-gtk/hv-installer-gui.py" "$@"
