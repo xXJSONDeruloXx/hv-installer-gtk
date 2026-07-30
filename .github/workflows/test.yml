@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install AppImage smoke-test display
+        run: sudo apt-get update && sudo apt-get install -y xvfb
       - name: Build pinned umipcompatd source
         run: python3 packaging/build-umipcompatd.py
       - name: Verify helper release inputs
@@ -42,5 +44,22 @@ jobs:
           (cd "$work" && "$GITHUB_WORKSPACE/$app" --appimage-extract >/dev/null && \
             test -x squashfs-root/usr/bin/python3 && \
             test -f squashfs-root/usr/lib/hv-installer-gtk/cpuid_fault_emulation/Makefile && \
-            test -s squashfs-root/usr/lib/hv-installer-gtk/umipcompatd/umipcompatd-source.tar.gz)
+            test -s squashfs-root/usr/lib/hv-installer-gtk/umipcompatd/umipcompatd-source.tar.gz && \
+            xvfb-run -a env \
+              PYTHONHOME="$PWD/squashfs-root/usr" \
+              PYTHONPATH="$PWD/squashfs-root/usr/lib/python3/dist-packages" \
+              LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib/x86_64-linux-gnu:$PWD/squashfs-root/usr/lib" \
+              GI_TYPELIB_PATH="$PWD/squashfs-root/usr/lib/x86_64-linux-gnu/girepository-1.0" \
+              GSETTINGS_SCHEMA_DIR="$PWD/squashfs-root/usr/share/glib-2.0/schemas" \
+              "$PWD/squashfs-root/usr/bin/python3" -c '
+import importlib.util
+path = "squashfs-root/usr/lib/hv-installer-gtk/hv-installer-gui.py"
+spec = importlib.util.spec_from_file_location("hv_appimage_smoke", path)
+gui = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gui)
+gui.Gtk.init()
+window = gui.OperationWindow(None, "Smoke")
+assert isinstance(window.spinner, gui.Gtk.Spinner)
+window.destroy()
+')
           rm -rf "$work"

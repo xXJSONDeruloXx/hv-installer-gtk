@@ -50,6 +50,12 @@ runpy.run_path(path, run_name="hv_backend_import_test")
         self.assertIn("*.AppImage", release)
         self.assertIn("*.AppImage.sha256", release)
         self.assertIn("--appimage-extract", tests)
+        self.assertIn("OperationWindow(None, \"Smoke\")", tests)
+
+    def test_operation_dialog_uses_the_stable_gtk_spinner(self):
+        source = APP.read_text()
+        self.assertIn("Gtk.Spinner", source)
+        self.assertNotIn("Adw.Spinner", source)
 
     def test_desktop_icon_is_packaged_for_native_bootstrap(self):
         source = APP.read_text()

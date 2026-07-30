@@ -1235,7 +1235,7 @@ class OperationWindow(Adw.Window):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
                       margin_top=22, margin_bottom=18, margin_start=22, margin_end=22)
         top = Gtk.Box(spacing=12)
-        self.spinner = Adw.Spinner(width_request=32, height_request=32); top.append(self.spinner)
+        self.spinner = Gtk.Spinner(width_request=32, height_request=32, spinning=True); top.append(self.spinner)
         labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.heading = Gtk.Label(label=title, xalign=0, css_classes=["title-2"])
         self.summary = Gtk.Label(label="This may take a few minutes. You can follow the details below.", xalign=0,
