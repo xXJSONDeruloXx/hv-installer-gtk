@@ -660,6 +660,17 @@ def build_container():
     print(f"Module compiled and installed for {os.uname().release}.")
 
 
+def require_kernel_headers(kernel=None, modules=Path("/lib/modules")):
+    kernel = kernel or os.uname().release
+    build = modules / kernel / "build"
+    if build.is_dir(): return build
+    try: available = sorted(path.name for path in modules.iterdir() if (path / "build").is_dir())
+    except OSError: available = []
+    hint = (f" Available header trees: {', '.join(available)}. Restart into a matching installed kernel, then retry."
+            if available else " Install the exact matching kernel headers, then retry.")
+    raise BackendError(f"Kernel headers for running kernel {kernel} are unavailable at {build}.{hint}")
+
+
 def install_dependencies():
     kernel = os.uname().release
     if shutil.which("pacman"):
@@ -676,6 +687,7 @@ def install_dependencies():
 
 def install_dkms():
     if not shutil.which("dkms"): raise BackendError("DKMS is unavailable")
+    require_kernel_headers()
     status = quiet(["dkms", "status", "-m", "cpuid_fault_emulation", "-v", "0.1"])
     registered = "cpuid_fault_emulation/0.1" in status.stdout
     backup = STATE_DIR / "dkms-source-backup"

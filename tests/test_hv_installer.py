@@ -88,6 +88,13 @@ class InstallerTests(unittest.TestCase):
         entry = "title Linux\noptions root=UUID=test quiet\n"
         self.assertEqual(gui.replace_kernel_arg(gui.replace_kernel_arg(entry, "systemd-boot", True), "systemd-boot", False), entry)
 
+    def test_kernel_header_preflight_requires_the_running_kernel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            modules = Path(directory) / "modules"; (modules / "newer" / "build").mkdir(parents=True)
+            with self.assertRaisesRegex(gui.BackendError, "Kernel headers for running kernel older are unavailable"):
+                gui.require_kernel_headers("older", modules)
+            self.assertEqual(gui.require_kernel_headers("newer", modules), modules / "newer" / "build")
+
     def test_kernel_module_source_is_tracked_and_current(self):
         source = APP.parent / "cpuid_fault_emulation"
         self.assertEqual(gui.bundled_source(), source)
