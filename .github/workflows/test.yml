@@ -51,15 +51,5 @@ jobs:
               LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib/x86_64-linux-gnu:$PWD/squashfs-root/usr/lib" \
               GI_TYPELIB_PATH="$PWD/squashfs-root/usr/lib/x86_64-linux-gnu/girepository-1.0" \
               GSETTINGS_SCHEMA_DIR="$PWD/squashfs-root/usr/share/glib-2.0/schemas" \
-              "$PWD/squashfs-root/usr/bin/python3" -c '
-import importlib.util
-path = "squashfs-root/usr/lib/hv-installer-gtk/hv-installer-gui.py"
-spec = importlib.util.spec_from_file_location("hv_appimage_smoke", path)
-gui = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(gui)
-gui.Gtk.init()
-window = gui.OperationWindow(None, "Smoke")
-assert isinstance(window.spinner, gui.Gtk.Spinner)
-window.destroy()
-')
+              "$PWD/squashfs-root/usr/bin/python3" -c 'import importlib.util; path = "squashfs-root/usr/lib/hv-installer-gtk/hv-installer-gui.py"; spec = importlib.util.spec_from_file_location("hv_appimage_smoke", path); gui = importlib.util.module_from_spec(spec); spec.loader.exec_module(gui); gui.Gtk.init(); window = gui.OperationWindow(None, "Smoke"); assert isinstance(window.spinner, gui.Gtk.Spinner); window.destroy()')
           rm -rf "$work"
