@@ -26,6 +26,8 @@ jobs:
       - name: Install AppImage smoke-test display
         run: sudo apt-get update && sudo apt-get install -y xvfb
       - name: Build pinned umipcompatd source
+        env:
+          UMIPCOMPATD_CONTAINER_RUNTIME: docker
         run: python3 packaging/build-umipcompatd.py
       - name: Verify helper release inputs
         run: |
